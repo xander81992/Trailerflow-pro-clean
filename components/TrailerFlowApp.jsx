@@ -1036,8 +1036,14 @@ function AdminRequests({ user, store }) {
 function ShunterTasks({ user, store, completedOnly = false, search = '' }) {
   const data = store.data;
   const [dropDoor, setDropDoor] = useState({});
-  const tasks = data.tasks.filter((t) => (t.assignedTo === user.id || t.assignedTo === 'u-shunter' || !t.assignedTo) && (completedOnly ? t.status === 'Completed' : t.status !== 'Completed') && `${t.id} ${t.po} ${data.trailers.find((x) => x.id === t.trailerId)?.number || ''}`.toLowerCase().includes(search.toLowerCase()));
-  if (!tasks.length) return <div className="empty-state">No {completedOnly ? 'completed' : 'active'} tasks found.</div>;
+  // Show all active tasks to shunter, so tasks are not hidden by Firebase UID vs demo ID.
+  const tasks = data.tasks.filter((t) =>
+    (completedOnly ? t.status === 'Completed' : t.status !== 'Completed') &&
+    `${t.id} ${t.po || ''} ${data.trailers.find((x) => x.id === t.trailerId)?.number || ''}`
+      .toLowerCase()
+      .includes(search.toLowerCase())
+  );
+  if (!tasks.length) return <div className="empty-state">No {completedOnly ? 'completed' : 'active'} tasks found.<br />Create a request from RNF or assign a request from Admin.</div>;
   return <div className="task-list">{tasks.map((task) => {
     const trailer = data.trailers.find((t) => t.id === task.trailerId);
     const availableDoors = data.doors.filter((d) => !d.trailerId && d.warehouseId === task.destinationWarehouseId && d.status !== 'Maintenance');
