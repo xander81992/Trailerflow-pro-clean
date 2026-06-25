@@ -3,7 +3,7 @@
 import { useMemo, useState, useEffect } from 'react';
 import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
-import { auth, db, isFirebaseConfigured } from '@/lib/firebase';
+import { auth, db, isFirebaseConfigured } from '../lib/firebase';
 
 const STORE_KEY = 'trailerflow-pro-clean-v1';
 const nowISO = () => new Date().toISOString();
