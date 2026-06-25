@@ -1,6 +1,9 @@
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
+import { signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db, isFirebaseConfigured } from '@/lib/firebase';
 
 const STORE_KEY = 'trailerflow-pro-clean-v1';
 const nowISO = () => new Date().toISOString();
@@ -414,14 +417,141 @@ export default function TrailerFlowApp() {
   const [user, setUser] = useState(null);
   const [page, setPage] = useState('dashboard');
   const [search, setSearch] = useState('');
+  const [authReady, setAuthReady] = useState(false);
+  const [loginRole, setLoginRole] = useState(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
 
-  const loginAs = (role) => {
-    const nextUser = store.data.users.find((u) => u.role === role);
-    setUser(nextUser);
+  const companyToId = (company) => {
+    const value = String(company || '').toLowerCase();
+    if (value.includes('rnf')) return 'rnf';
+    return 'hopewell';
+  };
+
+  const getPortalUser = async (firebaseUser) => {
+    if (!db) throw new Error('Firebase database is not configured. Check Vercel environment variables.');
+    const snap = await getDoc(doc(db, 'users', firebaseUser.uid));
+    if (!snap.exists()) throw new Error('No portal role was found for this account. Check Firestore users/{UID}.');
+
+    const profile = snap.data();
+    if (profile.active === false) throw new Error('This account is disabled. Contact the admin.');
+
+    return {
+      id: firebaseUser.uid,
+      name: profile.name || firebaseUser.email || 'Portal User',
+      email: profile.email || firebaseUser.email || '',
+      role: profile.role || 'rnf',
+      companyId: profile.companyId || companyToId(profile.company),
+      active: profile.active !== false
+    };
+  };
+
+  useEffect(() => {
+    if (!isFirebaseConfigured || !auth) {
+      setAuthReady(true);
+      return;
+    }
+
+    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      try {
+        if (!firebaseUser) {
+          setUser(null);
+          setAuthReady(true);
+          return;
+        }
+        const portalUser = await getPortalUser(firebaseUser);
+        setUser(portalUser);
+        setPage('dashboard');
+      } catch (error) {
+        console.error(error);
+        setUser(null);
+        setAuthError(error.message || 'Unable to load your portal role.');
+        if (auth.currentUser) await signOut(auth);
+      } finally {
+        setAuthReady(true);
+      }
+    });
+
+    return () => unsub();
+  }, []);
+
+  const openLogin = (role) => {
+    setLoginRole(role);
+    setEmail(role === 'admin' ? 'admin@test.com' : role === 'rnf' ? 'rnf@test.com' : 'shunter@test.com');
+    setPassword('');
+    setAuthError('');
+  };
+
+  const handleLogin = async (event) => {
+    event.preventDefault();
+    setAuthError('');
+
+    if (!isFirebaseConfigured || !auth || !db) {
+      setAuthError('Firebase is not connected yet. Check Vercel environment variables and redeploy.');
+      return;
+    }
+
+    if (!email.trim() || !password.trim()) {
+      setAuthError('Enter both email and password.');
+      return;
+    }
+
+    try {
+      setAuthBusy(true);
+      const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
+      const portalUser = await getPortalUser(credential.user);
+
+      if (loginRole && portalUser.role !== loginRole) {
+        await signOut(auth);
+        setUser(null);
+        setAuthError(`This login is for ${roleLabel(portalUser.role)}, not ${roleLabel(loginRole)}.`);
+        return;
+      }
+
+      setUser(portalUser);
+      setPage('dashboard');
+      setLoginRole(null);
+      setPassword('');
+    } catch (error) {
+      console.error(error);
+      setAuthError(cleanAuthError(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (auth?.currentUser) await signOut(auth);
+    setUser(null);
     setPage('dashboard');
   };
 
-  if (!user) return <Landing data={store.data} loginAs={loginAs} />;
+  if (!authReady) {
+    return <div className="landing"><div className="login-panel"><h2 className="panel-title">Loading HPW-RNF Portal...</h2><p className="panel-copy">Checking secure login.</p></div></div>;
+  }
+
+  if (!user) {
+    return (
+      <>
+        <Landing data={store.data} openLogin={openLogin} />
+        {loginRole ? (
+          <LoginModal
+            role={loginRole}
+            email={email}
+            setEmail={setEmail}
+            password={password}
+            setPassword={setPassword}
+            error={authError}
+            busy={authBusy}
+            onClose={() => setLoginRole(null)}
+            onSubmit={handleLogin}
+          />
+        ) : null}
+      </>
+    );
+  }
 
   const nav = getNav(user.role);
   const currentPage = nav.some((n) => n.id === page) ? page : 'dashboard';
@@ -449,8 +579,7 @@ export default function TrailerFlowApp() {
           ))}
         </div>
         <div className="sidebar-footer">
-          <button className="btn btn-ghost" onClick={() => store.resetDemo()}>Reset Demo Data</button>
-          <button className="btn btn-danger" onClick={() => setUser(null)}>Logout</button>
+          <button className="btn btn-danger" onClick={handleLogout}>Logout</button>
         </div>
       </aside>
       <main className="main">
@@ -461,7 +590,7 @@ export default function TrailerFlowApp() {
           </div>
           <div className="topbar-tools">
             <input className="search" placeholder="Search trailers, PO, warehouse..." value={search} onChange={(e) => setSearch(e.target.value)} />
-            <span className="badge green">Live Demo</span>
+            <span className="badge green">Online</span>
           </div>
         </div>
         <PageRouter user={user} page={currentPage} search={search} store={store} />
@@ -471,7 +600,7 @@ export default function TrailerFlowApp() {
   );
 }
 
-function Landing({ data, loginAs }) {
+function Landing({ data, openLogin }) {
   const stats = useMemo(() => ({
     trailers: data.trailers.length,
     whses: data.warehouses.length,
@@ -489,9 +618,9 @@ function Landing({ data, loginAs }) {
           </div>
         </div>
         <div className="nav-actions">
-          <button className="btn btn-soft" onClick={() => loginAs('admin')}>Admin Demo</button>
-          <button className="btn btn-green" onClick={() => loginAs('rnf')}>RNF Login</button>
-          <button className="btn btn-purple" onClick={() => loginAs('shunter')}>Shunter Login</button>
+          <button className="btn btn-soft" onClick={() => openLogin('admin')}>Admin Login</button>
+          <button className="btn btn-green" onClick={() => openLogin('rnf')}>RNF Login</button>
+          <button className="btn btn-purple" onClick={() => openLogin('shunter')}>Shunter Login</button>
         </div>
       </nav>
       <section className="hero">
@@ -500,8 +629,8 @@ function Landing({ data, loginAs }) {
           <h1>Modern yard visibility for intercompany trailer moves.</h1>
           <p>Book pickups, request empty trailers, assign shunter tasks, prevent double-booked doors, and give RNF live visibility of trailer locations from one clean portal.</p>
           <div className="hero-actions">
-            <button className="btn btn-primary" onClick={() => loginAs('admin')}>Open Admin Control Center</button>
-            <button className="btn btn-ghost" onClick={() => loginAs('rnf')}>View RNF Dashboard</button>
+            <button className="btn btn-primary" onClick={() => openLogin('admin')}>Admin Login</button>
+            <button className="btn btn-ghost" onClick={() => openLogin('rnf')}>RNF Login</button>
           </div>
           <div className="hero-metrics">
             <div className="hero-metric"><strong>{stats.trailers}</strong><span>Trailers</span></div>
@@ -514,13 +643,13 @@ function Landing({ data, loginAs }) {
           <h2 className="panel-title">Choose your portal</h2>
           <p className="panel-copy">This clean build is ready for GitHub and Vercel. It includes the modern role-based workflow we discussed.</p>
           <div className="role-grid">
-            <button className="role-card" onClick={() => loginAs('admin')}>
+            <button className="role-card" onClick={() => openLogin('admin')}>
               <span className="role-icon admin">👑</span><span><strong>Hopewell Admin</strong><span>Control center, WHSE setup, doors, trailers, assignments, reports.</span></span>
             </button>
-            <button className="role-card" onClick={() => loginAs('rnf')}>
+            <button className="role-card" onClick={() => openLogin('rnf')}>
               <span className="role-icon rnf">🏢</span><span><strong>RNF User</strong><span>Book pickups, request empties, and view RNF trailer locations.</span></span>
             </button>
-            <button className="role-card" onClick={() => loginAs('shunter')}>
+            <button className="role-card" onClick={() => openLogin('shunter')}>
               <span className="role-icon shunter">🚛</span><span><strong>Shunter</strong><span>Assigned tasks only. Start, arrive, pickup, drop, complete.</span></span>
             </button>
           </div>
@@ -533,6 +662,40 @@ function Landing({ data, loginAs }) {
         <div className="feature"><strong>Mobile shunter flow</strong><p>No charts. Just assigned work with large action buttons.</p></div>
         <div className="feature"><strong>Reports ready</strong><p>Export daily, weekly, monthly operations reports.</p></div>
       </section>
+    </div>
+  );
+}
+
+
+function cleanAuthError(error) {
+  const message = String(error?.message || error || 'Login failed.');
+  if (message.includes('auth/invalid-credential') || message.includes('auth/wrong-password') || message.includes('auth/user-not-found')) return 'Invalid email or password.';
+  if (message.includes('auth/too-many-requests')) return 'Too many login attempts. Try again later.';
+  if (message.includes('auth/network-request-failed')) return 'Network error. Check your connection.';
+  return message.replace('Firebase: ', '').replace(/\s*\(auth\/.+?\)\.?$/, '.');
+}
+
+function LoginModal({ role, email, setEmail, password, setPassword, error, busy, onClose, onSubmit }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'grid', placeItems: 'center', background: 'rgba(15, 23, 42, 0.58)', padding: 20 }}>
+      <form onSubmit={onSubmit} className="card" style={{ width: 'min(460px, 100%)', boxShadow: '0 24px 70px rgba(15, 23, 42, 0.30)' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <h2>{roleLabel(role)} Login</h2>
+            <p className="card-sub">Enter your Firebase email and password to access the portal.</p>
+          </div>
+          <button type="button" className="btn btn-soft btn-small" onClick={onClose}>✕</button>
+        </div>
+        <div className="form-grid one">
+          <Field label="Email"><input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@test.com" autoComplete="email" /></Field>
+          <Field label="Password"><input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" type="password" autoComplete="current-password" /></Field>
+        </div>
+        {error ? <div className="notice red">{error}</div> : null}
+        <div className="form-actions">
+          <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Signing in...' : 'Sign In'}</button>
+        </div>
+      </form>
     </div>
   );
 }
