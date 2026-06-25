@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
-import { signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db, isFirebaseConfigured } from '@/lib/firebase';
 
@@ -449,32 +449,21 @@ export default function TrailerFlowApp() {
   };
 
   useEffect(() => {
-    if (!isFirebaseConfigured || !auth) {
-      setAuthReady(true);
-      return;
-    }
-
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+    const forceLoginScreen = async () => {
       try {
-        if (!firebaseUser) {
-          setUser(null);
-          setAuthReady(true);
-          return;
+        if (auth?.currentUser) {
+          await signOut(auth);
         }
-        const portalUser = await getPortalUser(firebaseUser);
-        setUser(portalUser);
-        setPage('dashboard');
       } catch (error) {
-        console.error(error);
-        setUser(null);
-        setAuthError(error.message || 'Unable to load your portal role.');
-        if (auth.currentUser) await signOut(auth);
+        console.warn('Firebase sign out warning:', error);
       } finally {
+        setUser(null);
+        setLoginRole(null);
         setAuthReady(true);
       }
-    });
+    };
 
-    return () => unsub();
+    forceLoginScreen();
   }, []);
 
   const openLogin = (role) => {
