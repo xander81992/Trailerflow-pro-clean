@@ -145,11 +145,11 @@ function useTrailerData() {
   }, [toast]);
 
   const update = (fn, message) => {
-    setData((prev) => {
-      const copy = structuredClone(prev);
-      fn(copy);
-      return copy;
-    });
+    // Run validation before React state update so button try/catch can show alerts
+    // instead of crashing the whole page.
+    const copy = structuredClone(data);
+    fn(copy);
+    setData(copy);
     if (message) setToast(message);
   };
 
@@ -373,6 +373,7 @@ function useTrailerData() {
       task.destinationDoorId = destinationDoorId;
     }
     task.status = nextStatus;
+    task.timestamps = task.timestamps || {};
     task.timestamps[nextStatus] = nowISO();
     if (request) request.status = nextStatus === 'Completed' ? 'Completed' : task.status;
     if (nextStatus === 'Completed' && trailer) trailer.activeTaskId = null;
