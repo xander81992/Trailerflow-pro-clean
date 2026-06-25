@@ -2,10 +2,11 @@
 
 import { useMemo, useState, useEffect } from 'react';
 import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import { auth, db, isFirebaseConfigured } from '../lib/firebase';
 
-const STORE_KEY = 'trailerflow-pro-clean-v1';
+const FIRESTORE_DATA_COLLECTION = 'portalData';
+const FIRESTORE_DATA_DOC = 'main';
 const nowISO = () => new Date().toISOString();
 const timeOnly = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const dateOnly = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
@@ -54,27 +55,24 @@ function createSeed() {
     }
   });
 
-  const trailers = [];
-  for (let i = 1; i <= 30; i++) {
-    trailers.push({
-      id: `t-${String(i).padStart(3, '0')}`,
-      number: `TR-${String(i).padStart(3, '0')}`,
-      plate: `RNF-${1000 + i}`,
-      companyId: 'rnf',
-      status: i % 6 === 0 ? 'Empty' : i % 7 === 0 ? 'In Transit' : 'Loaded',
-      warehouseId: null,
-      doorId: null,
-      activeTaskId: null,
-      notes: '',
-      lastMovedAt: nowISO()
-    });
-  }
+  const trailerNumbers = ['1209', '1206', '1185', 'L1182', 'L1178', '1204', '1195', '1205', 'L1177', '1220', '1221', 'L1181', '1207', '1210', '1161', '1157'];
+  const trailers = trailerNumbers.map((number, index) => ({
+    id: `t-${String(index + 1).padStart(3, '0')}`,
+    number,
+    plate: '',
+    companyId: 'rnf',
+    status: index % 6 === 0 ? 'Empty' : index % 7 === 0 ? 'In Transit' : 'Loaded',
+    warehouseId: null,
+    doorId: null,
+    activeTaskId: null,
+    notes: '',
+    lastMovedAt: nowISO()
+  }));
 
   const assignPairs = [
     ['t-001', 'd-a-1'], ['t-002', 'd-a-3'], ['t-003', 'd-a-5'], ['t-004', 'd-b-2'], ['t-005', 'd-b-4'],
     ['t-008', 'd-c-1'], ['t-009', 'd-c-3'], ['t-010', 'd-d-1'], ['t-011', 'd-e-2'], ['t-012', 'd-f-1'],
-    ['t-013', 'd-f-3'], ['t-014', 'd-e-5'], ['t-015', 'd-c-5'], ['t-016', 'd-a-7'], ['t-017', 'd-b-6'],
-    ['t-018', 'd-d-3'], ['t-019', 'd-e-7'], ['t-020', 'd-f-5']
+    ['t-013', 'd-f-3'], ['t-014', 'd-e-5'], ['t-015', 'd-c-5'], ['t-016', 'd-a-7']
   ];
   assignPairs.forEach(([trailerId, doorId]) => {
     const door = doors.find((d) => d.id === doorId);
@@ -123,23 +121,37 @@ function createSeed() {
   return { companies, users, warehouses, doors, trailers, requests, tasks, movements, invitations: [] };
 }
 
-function getInitialData() {
-  if (typeof window === 'undefined') return createSeed();
-  try {
-    const stored = localStorage.getItem(STORE_KEY);
-    return stored ? JSON.parse(stored) : createSeed();
-  } catch {
-    return createSeed();
-  }
-}
-
 function useTrailerData() {
-  const [data, setData] = useState(getInitialData);
+  const [data, setData] = useState(createSeed);
   const [toast, setToast] = useState('');
+  const [dataReady, setDataReady] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem(STORE_KEY, JSON.stringify(data));
-  }, [data]);
+    if (!isFirebaseConfigured || !db) {
+      setDataReady(true);
+      return;
+    }
+
+    const ref = doc(db, FIRESTORE_DATA_COLLECTION, FIRESTORE_DATA_DOC);
+
+    const unsub = onSnapshot(ref, async (snap) => {
+      if (snap.exists()) {
+        const cloud = snap.data();
+        setData(cloud.data || cloud);
+      } else {
+        const seed = createSeed();
+        await setDoc(ref, { data: seed, updatedAt: nowISO(), createdAt: nowISO() });
+        setData(seed);
+      }
+      setDataReady(true);
+    }, (error) => {
+      console.error('Firestore data load error:', error);
+      setToast('Could not load Firestore data. Check Firestore rules.');
+      setDataReady(true);
+    });
+
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -147,12 +159,22 @@ function useTrailerData() {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  const saveToFirestore = async (nextData) => {
+    if (!isFirebaseConfigured || !db) return;
+    const ref = doc(db, FIRESTORE_DATA_COLLECTION, FIRESTORE_DATA_DOC);
+    await setDoc(ref, { data: nextData, updatedAt: nowISO() }, { merge: true });
+  };
+
   const update = (fn, message) => {
     // Run validation before React state update so button try/catch can show alerts
     // instead of crashing the whole page.
     const copy = structuredClone(data);
     fn(copy);
     setData(copy);
+    saveToFirestore(copy).catch((error) => {
+      console.error('Firestore save error:', error);
+      setToast('Saved on this screen, but Firestore save failed. Check database rules.');
+    });
     if (message) setToast(message);
   };
 
@@ -392,10 +414,11 @@ function useTrailerData() {
   const resetDemo = () => {
     const seed = createSeed();
     setData(seed);
-    setToast('Demo data reset.');
+    saveToFirestore(seed).catch((error) => console.error('Firestore reset error:', error));
+    setToast('Portal data reset.');
   };
 
-  return { data, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
+  return { data, dataReady, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
 }
 
 function iconForStatus(status) {
@@ -517,8 +540,8 @@ export default function TrailerFlowApp() {
     setPage('dashboard');
   };
 
-  if (!authReady) {
-    return <div className="landing"><div className="login-panel"><h2 className="panel-title">Loading HPW-RNF Portal...</h2><p className="panel-copy">Checking secure login.</p></div></div>;
+  if (!authReady || !store.dataReady) {
+    return <div className="landing"><div className="login-panel"><h2 className="panel-title">Loading HPW-RNF Portal...</h2><p className="panel-copy">Checking secure login and Firestore data.</p></div></div>;
   }
 
   if (!user) {
