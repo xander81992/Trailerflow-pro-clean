@@ -1,8 +1,12 @@
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
+import { auth, db, isFirebaseConfigured } from '../lib/firebase';
 
-const STORE_KEY = 'trailerflow-pro-clean-v1';
+const FIRESTORE_DATA_COLLECTION = 'portalData';
+const FIRESTORE_DATA_DOC = 'main';
 const nowISO = () => new Date().toISOString();
 const timeOnly = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const dateOnly = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
@@ -51,27 +55,24 @@ function createSeed() {
     }
   });
 
-  const trailers = [];
-  for (let i = 1; i <= 30; i++) {
-    trailers.push({
-      id: `t-${String(i).padStart(3, '0')}`,
-      number: `TR-${String(i).padStart(3, '0')}`,
-      plate: `RNF-${1000 + i}`,
-      companyId: 'rnf',
-      status: i % 6 === 0 ? 'Empty' : i % 7 === 0 ? 'In Transit' : 'Loaded',
-      warehouseId: null,
-      doorId: null,
-      activeTaskId: null,
-      notes: '',
-      lastMovedAt: nowISO()
-    });
-  }
+  const trailerNumbers = ['1209', '1206', '1185', 'L1182', 'L1178', '1204', '1195', '1205', 'L1177', '1220', '1221', 'L1181', '1207', '1210', '1161', '1157'];
+  const trailers = trailerNumbers.map((number, index) => ({
+    id: `t-${String(index + 1).padStart(3, '0')}`,
+    number,
+    plate: '',
+    companyId: 'rnf',
+    status: index % 6 === 0 ? 'Empty' : index % 7 === 0 ? 'In Transit' : 'Loaded',
+    warehouseId: null,
+    doorId: null,
+    activeTaskId: null,
+    notes: '',
+    lastMovedAt: nowISO()
+  }));
 
   const assignPairs = [
     ['t-001', 'd-a-1'], ['t-002', 'd-a-3'], ['t-003', 'd-a-5'], ['t-004', 'd-b-2'], ['t-005', 'd-b-4'],
     ['t-008', 'd-c-1'], ['t-009', 'd-c-3'], ['t-010', 'd-d-1'], ['t-011', 'd-e-2'], ['t-012', 'd-f-1'],
-    ['t-013', 'd-f-3'], ['t-014', 'd-e-5'], ['t-015', 'd-c-5'], ['t-016', 'd-a-7'], ['t-017', 'd-b-6'],
-    ['t-018', 'd-d-3'], ['t-019', 'd-e-7'], ['t-020', 'd-f-5']
+    ['t-013', 'd-f-3'], ['t-014', 'd-e-5'], ['t-015', 'd-c-5'], ['t-016', 'd-a-7']
   ];
   assignPairs.forEach(([trailerId, doorId]) => {
     const door = doors.find((d) => d.id === doorId);
@@ -120,23 +121,37 @@ function createSeed() {
   return { companies, users, warehouses, doors, trailers, requests, tasks, movements, invitations: [] };
 }
 
-function getInitialData() {
-  if (typeof window === 'undefined') return createSeed();
-  try {
-    const stored = localStorage.getItem(STORE_KEY);
-    return stored ? JSON.parse(stored) : createSeed();
-  } catch {
-    return createSeed();
-  }
-}
-
 function useTrailerData() {
-  const [data, setData] = useState(getInitialData);
+  const [data, setData] = useState(createSeed);
   const [toast, setToast] = useState('');
+  const [dataReady, setDataReady] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem(STORE_KEY, JSON.stringify(data));
-  }, [data]);
+    if (!isFirebaseConfigured || !db) {
+      setDataReady(true);
+      return;
+    }
+
+    const ref = doc(db, FIRESTORE_DATA_COLLECTION, FIRESTORE_DATA_DOC);
+
+    const unsub = onSnapshot(ref, async (snap) => {
+      if (snap.exists()) {
+        const cloud = snap.data();
+        setData(cloud.data || cloud);
+      } else {
+        const seed = createSeed();
+        await setDoc(ref, { data: seed, updatedAt: nowISO(), createdAt: nowISO() });
+        setData(seed);
+      }
+      setDataReady(true);
+    }, (error) => {
+      console.error('Firestore data load error:', error);
+      setToast('Could not load Firestore data. Check Firestore rules.');
+      setDataReady(true);
+    });
+
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -144,12 +159,22 @@ function useTrailerData() {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  const saveToFirestore = async (nextData) => {
+    if (!isFirebaseConfigured || !db) return;
+    const ref = doc(db, FIRESTORE_DATA_COLLECTION, FIRESTORE_DATA_DOC);
+    await setDoc(ref, { data: nextData, updatedAt: nowISO() }, { merge: true });
+  };
+
   const update = (fn, message) => {
     // Run validation before React state update so button try/catch can show alerts
     // instead of crashing the whole page.
     const copy = structuredClone(data);
     fn(copy);
     setData(copy);
+    saveToFirestore(copy).catch((error) => {
+      console.error('Firestore save error:', error);
+      setToast('Saved on this screen, but Firestore save failed. Check database rules.');
+    });
     if (message) setToast(message);
   };
 
@@ -389,10 +414,11 @@ function useTrailerData() {
   const resetDemo = () => {
     const seed = createSeed();
     setData(seed);
-    setToast('Demo data reset.');
+    saveToFirestore(seed).catch((error) => console.error('Firestore reset error:', error));
+    setToast('Portal data reset.');
   };
 
-  return { data, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
+  return { data, dataReady, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
 }
 
 function iconForStatus(status) {
@@ -414,14 +440,130 @@ export default function TrailerFlowApp() {
   const [user, setUser] = useState(null);
   const [page, setPage] = useState('dashboard');
   const [search, setSearch] = useState('');
+  const [authReady, setAuthReady] = useState(false);
+  const [loginRole, setLoginRole] = useState(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
 
-  const loginAs = (role) => {
-    const nextUser = store.data.users.find((u) => u.role === role);
-    setUser(nextUser);
+  const companyToId = (company) => {
+    const value = String(company || '').toLowerCase();
+    if (value.includes('rnf')) return 'rnf';
+    return 'hopewell';
+  };
+
+  const getPortalUser = async (firebaseUser) => {
+    if (!db) throw new Error('Firebase database is not configured. Check Vercel environment variables.');
+    const snap = await getDoc(doc(db, 'users', firebaseUser.uid));
+    if (!snap.exists()) throw new Error('No portal role was found for this account. Check Firestore users/{UID}.');
+
+    const profile = snap.data();
+    if (profile.active === false) throw new Error('This account is disabled. Contact the admin.');
+
+    return {
+      id: firebaseUser.uid,
+      name: profile.name || firebaseUser.email || 'Portal User',
+      email: profile.email || firebaseUser.email || '',
+      role: profile.role || 'rnf',
+      companyId: profile.companyId || companyToId(profile.company),
+      active: profile.active !== false
+    };
+  };
+
+  useEffect(() => {
+    const forceLoginScreen = async () => {
+      try {
+        if (auth?.currentUser) {
+          await signOut(auth);
+        }
+      } catch (error) {
+        console.warn('Firebase sign out warning:', error);
+      } finally {
+        setUser(null);
+        setLoginRole(null);
+        setAuthReady(true);
+      }
+    };
+
+    forceLoginScreen();
+  }, []);
+
+  const openLogin = (role) => {
+    setLoginRole(role);
+    setEmail(role === 'admin' ? 'admin@test.com' : role === 'rnf' ? 'rnf@test.com' : 'shunter@test.com');
+    setPassword('');
+    setAuthError('');
+  };
+
+  const handleLogin = async (event) => {
+    event.preventDefault();
+    setAuthError('');
+
+    if (!isFirebaseConfigured || !auth || !db) {
+      setAuthError('Firebase is not connected yet. Check Vercel environment variables and redeploy.');
+      return;
+    }
+
+    if (!email.trim() || !password.trim()) {
+      setAuthError('Enter both email and password.');
+      return;
+    }
+
+    try {
+      setAuthBusy(true);
+      const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
+      const portalUser = await getPortalUser(credential.user);
+
+      if (loginRole && portalUser.role !== loginRole) {
+        await signOut(auth);
+        setUser(null);
+        setAuthError(`This login is for ${roleLabel(portalUser.role)}, not ${roleLabel(loginRole)}.`);
+        return;
+      }
+
+      setUser(portalUser);
+      setPage('dashboard');
+      setLoginRole(null);
+      setPassword('');
+    } catch (error) {
+      console.error(error);
+      setAuthError(cleanAuthError(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (auth?.currentUser) await signOut(auth);
+    setUser(null);
     setPage('dashboard');
   };
 
-  if (!user) return <Landing data={store.data} loginAs={loginAs} />;
+  if (!authReady || !store.dataReady) {
+    return <div className="landing"><div className="login-panel"><h2 className="panel-title">Loading HPW-RNF Portal...</h2><p className="panel-copy">Checking secure login and Firestore data.</p></div></div>;
+  }
+
+  if (!user) {
+    return (
+      <>
+        <Landing data={store.data} openLogin={openLogin} />
+        {loginRole ? (
+          <LoginModal
+            role={loginRole}
+            email={email}
+            setEmail={setEmail}
+            password={password}
+            setPassword={setPassword}
+            error={authError}
+            busy={authBusy}
+            onClose={() => setLoginRole(null)}
+            onSubmit={handleLogin}
+          />
+        ) : null}
+      </>
+    );
+  }
 
   const nav = getNav(user.role);
   const currentPage = nav.some((n) => n.id === page) ? page : 'dashboard';
@@ -449,8 +591,7 @@ export default function TrailerFlowApp() {
           ))}
         </div>
         <div className="sidebar-footer">
-          <button className="btn btn-ghost" onClick={() => store.resetDemo()}>Reset Demo Data</button>
-          <button className="btn btn-danger" onClick={() => setUser(null)}>Logout</button>
+          <button className="btn btn-danger" onClick={handleLogout}>Logout</button>
         </div>
       </aside>
       <main className="main">
@@ -461,7 +602,7 @@ export default function TrailerFlowApp() {
           </div>
           <div className="topbar-tools">
             <input className="search" placeholder="Search trailers, PO, warehouse..." value={search} onChange={(e) => setSearch(e.target.value)} />
-            <span className="badge green">Live Demo</span>
+            <span className="badge green">Online</span>
           </div>
         </div>
         <PageRouter user={user} page={currentPage} search={search} store={store} />
@@ -471,7 +612,7 @@ export default function TrailerFlowApp() {
   );
 }
 
-function Landing({ data, loginAs }) {
+function Landing({ data, openLogin }) {
   const stats = useMemo(() => ({
     trailers: data.trailers.length,
     whses: data.warehouses.length,
@@ -489,9 +630,9 @@ function Landing({ data, loginAs }) {
           </div>
         </div>
         <div className="nav-actions">
-          <button className="btn btn-soft" onClick={() => loginAs('admin')}>Admin Demo</button>
-          <button className="btn btn-green" onClick={() => loginAs('rnf')}>RNF Login</button>
-          <button className="btn btn-purple" onClick={() => loginAs('shunter')}>Shunter Login</button>
+          <button className="btn btn-soft" onClick={() => openLogin('admin')}>Admin Login</button>
+          <button className="btn btn-green" onClick={() => openLogin('rnf')}>RNF Login</button>
+          <button className="btn btn-purple" onClick={() => openLogin('shunter')}>Shunter Login</button>
         </div>
       </nav>
       <section className="hero">
@@ -500,8 +641,8 @@ function Landing({ data, loginAs }) {
           <h1>Modern yard visibility for intercompany trailer moves.</h1>
           <p>Book pickups, request empty trailers, assign shunter tasks, prevent double-booked doors, and give RNF live visibility of trailer locations from one clean portal.</p>
           <div className="hero-actions">
-            <button className="btn btn-primary" onClick={() => loginAs('admin')}>Open Admin Control Center</button>
-            <button className="btn btn-ghost" onClick={() => loginAs('rnf')}>View RNF Dashboard</button>
+            <button className="btn btn-primary" onClick={() => openLogin('admin')}>Admin Login</button>
+            <button className="btn btn-ghost" onClick={() => openLogin('rnf')}>RNF Login</button>
           </div>
           <div className="hero-metrics">
             <div className="hero-metric"><strong>{stats.trailers}</strong><span>Trailers</span></div>
@@ -514,13 +655,13 @@ function Landing({ data, loginAs }) {
           <h2 className="panel-title">Choose your portal</h2>
           <p className="panel-copy">This clean build is ready for GitHub and Vercel. It includes the modern role-based workflow we discussed.</p>
           <div className="role-grid">
-            <button className="role-card" onClick={() => loginAs('admin')}>
+            <button className="role-card" onClick={() => openLogin('admin')}>
               <span className="role-icon admin">👑</span><span><strong>Hopewell Admin</strong><span>Control center, WHSE setup, doors, trailers, assignments, reports.</span></span>
             </button>
-            <button className="role-card" onClick={() => loginAs('rnf')}>
+            <button className="role-card" onClick={() => openLogin('rnf')}>
               <span className="role-icon rnf">🏢</span><span><strong>RNF User</strong><span>Book pickups, request empties, and view RNF trailer locations.</span></span>
             </button>
-            <button className="role-card" onClick={() => loginAs('shunter')}>
+            <button className="role-card" onClick={() => openLogin('shunter')}>
               <span className="role-icon shunter">🚛</span><span><strong>Shunter</strong><span>Assigned tasks only. Start, arrive, pickup, drop, complete.</span></span>
             </button>
           </div>
@@ -533,6 +674,40 @@ function Landing({ data, loginAs }) {
         <div className="feature"><strong>Mobile shunter flow</strong><p>No charts. Just assigned work with large action buttons.</p></div>
         <div className="feature"><strong>Reports ready</strong><p>Export daily, weekly, monthly operations reports.</p></div>
       </section>
+    </div>
+  );
+}
+
+
+function cleanAuthError(error) {
+  const message = String(error?.message || error || 'Login failed.');
+  if (message.includes('auth/invalid-credential') || message.includes('auth/wrong-password') || message.includes('auth/user-not-found')) return 'Invalid email or password.';
+  if (message.includes('auth/too-many-requests')) return 'Too many login attempts. Try again later.';
+  if (message.includes('auth/network-request-failed')) return 'Network error. Check your connection.';
+  return message.replace('Firebase: ', '').replace(/\s*\(auth\/.+?\)\.?$/, '.');
+}
+
+function LoginModal({ role, email, setEmail, password, setPassword, error, busy, onClose, onSubmit }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'grid', placeItems: 'center', background: 'rgba(15, 23, 42, 0.58)', padding: 20 }}>
+      <form onSubmit={onSubmit} className="card" style={{ width: 'min(460px, 100%)', boxShadow: '0 24px 70px rgba(15, 23, 42, 0.30)' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <h2>{roleLabel(role)} Login</h2>
+            <p className="card-sub">Enter your Firebase email and password to access the portal.</p>
+          </div>
+          <button type="button" className="btn btn-soft btn-small" onClick={onClose}>✕</button>
+        </div>
+        <div className="form-grid one">
+          <Field label="Email"><input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@test.com" autoComplete="email" /></Field>
+          <Field label="Password"><input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" type="password" autoComplete="current-password" /></Field>
+        </div>
+        {error ? <div className="notice red">{error}</div> : null}
+        <div className="form-actions">
+          <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Signing in...' : 'Sign In'}</button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -608,29 +783,149 @@ function getStats(data, companyId = null) {
   };
 }
 
+function DashboardDesignStyles() {
+  return <style>{`
+    .tf2-dashboard { display: flex; flex-direction: column; gap: 18px; }
+    .tf2-hero { position: relative; overflow: hidden; border-radius: 28px; padding: 24px; background: radial-gradient(circle at 15% 10%, rgba(34,197,94,.24), transparent 32%), linear-gradient(135deg, #07111f 0%, #0f2442 52%, #133b63 100%); color: #fff; box-shadow: 0 22px 55px rgba(15, 23, 42, .22); }
+    .tf2-hero:after { content: ''; position: absolute; width: 260px; height: 260px; border-radius: 50%; right: -95px; top: -80px; background: rgba(59,130,246,.25); filter: blur(2px); }
+    .tf2-hero-content { position: relative; z-index: 1; display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+    .tf2-eyebrow { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; background: rgba(255,255,255,.13); border: 1px solid rgba(255,255,255,.18); font-size: 12px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+    .tf2-hero h2 { margin: 12px 0 6px; font-size: clamp(28px, 3vw, 44px); line-height: 1.02; letter-spacing: -.04em; }
+    .tf2-hero p { margin: 0; color: rgba(255,255,255,.78); max-width: 720px; line-height: 1.6; }
+    .tf2-hero-side { display: grid; gap: 10px; min-width: 180px; }
+    .tf2-live-chip { display: flex; justify-content: space-between; gap: 14px; padding: 12px 14px; border-radius: 18px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18); backdrop-filter: blur(10px); }
+    .tf2-live-chip span { color: rgba(255,255,255,.72); font-size: 12px; }
+    .tf2-live-chip strong { font-size: 18px; }
+    .tf2-kpi-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+    .tf2-kpi { position: relative; overflow: hidden; border: 1px solid rgba(148,163,184,.18); border-radius: 24px; padding: 18px; background: linear-gradient(180deg, #fff, #f8fafc); box-shadow: 0 14px 30px rgba(15,23,42,.08); min-height: 128px; }
+    .tf2-kpi:after { content: ''; position: absolute; right: -22px; bottom: -26px; width: 92px; height: 92px; border-radius: 999px; background: var(--tf2-accent-soft); }
+    .tf2-kpi-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; position: relative; z-index: 1; }
+    .tf2-kpi-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 16px; background: var(--tf2-accent); color: #fff; box-shadow: 0 12px 24px var(--tf2-accent-shadow); }
+    .tf2-kpi-label { margin-top: 14px; color: #64748b; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; position: relative; z-index: 1; }
+    .tf2-kpi-value { font-size: 32px; line-height: 1; margin-top: 7px; font-weight: 900; color: #0f172a; position: relative; z-index: 1; letter-spacing: -.05em; }
+    .tf2-kpi-note { font-size: 12px; color: #64748b; margin-top: 8px; position: relative; z-index: 1; }
+    .tf2-layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(340px, .9fr); gap: 16px; align-items: stretch; }
+    .tf2-card { border-radius: 26px; background: rgba(255,255,255,.94); border: 1px solid rgba(148,163,184,.20); box-shadow: 0 14px 38px rgba(15,23,42,.08); overflow: hidden; }
+    .tf2-card.pad { padding: 18px; }
+    .tf2-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 18px 18px 10px; }
+    .tf2-card-title { margin: 0; font-size: 18px; letter-spacing: -.02em; color: #0f172a; }
+    .tf2-card-sub { margin: 4px 0 0; color: #64748b; font-size: 13px; line-height: 1.45; }
+    .tf2-card-body { padding: 0 18px 18px; }
+    .tf2-stack { display: grid; gap: 16px; }
+    .tf2-mini-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .tf2-mini { border-radius: 20px; padding: 15px; background: #f8fafc; border: 1px solid #e2e8f0; }
+    .tf2-mini strong { display: block; color: #0f172a; font-size: 22px; letter-spacing: -.03em; }
+    .tf2-mini span { color: #64748b; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .tf2-progress { height: 8px; border-radius: 999px; background: #e2e8f0; margin-top: 12px; overflow: hidden; }
+    .tf2-progress > i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #22c55e, #38bdf8); }
+    .tf2-warehouse-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .tf2-whse { border-radius: 20px; padding: 14px; background: linear-gradient(180deg, #ffffff, #f8fafc); border: 1px solid #e2e8f0; }
+    .tf2-whse-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+    .tf2-whse-name { font-weight: 900; color: #0f172a; }
+    .tf2-whse-code { color: #64748b; font-size: 12px; }
+    .tf2-activity { display: grid; gap: 10px; max-height: 420px; overflow: auto; padding-right: 3px; }
+    .tf2-activity-item { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 12px; border-radius: 18px; background: #f8fafc; border: 1px solid #e2e8f0; }
+    .tf2-activity-icon { width: 42px; height: 42px; border-radius: 15px; display: grid; place-items: center; background: #e0f2fe; color: #0369a1; }
+    .tf2-activity strong { display: block; color: #0f172a; font-size: 13px; line-height: 1.35; }
+    .tf2-activity span { display: block; color: #64748b; font-size: 12px; margin-top: 3px; }
+    .tf2-time { text-align: right; color: #64748b; font-size: 11px; white-space: nowrap; }
+    .tf2-task-table { width: 100%; border-collapse: separate; border-spacing: 0 10px; }
+    .tf2-task-table th { text-align: left; font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: .06em; padding: 0 12px; }
+    .tf2-task-table td { padding: 13px 12px; background: #f8fafc; border-top: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; color: #334155; }
+    .tf2-task-table td:first-child { border-left: 1px solid #e2e8f0; border-radius: 16px 0 0 16px; }
+    .tf2-task-table td:last-child { border-right: 1px solid #e2e8f0; border-radius: 0 16px 16px 0; }
+    .tf2-status { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 800; background: #eef2ff; color: #3730a3; }
+    .tf2-status.green { background: #dcfce7; color: #166534; } .tf2-status.orange { background: #ffedd5; color: #9a3412; } .tf2-status.red { background: #fee2e2; color: #991b1b; } .tf2-status.gray { background: #f1f5f9; color: #475569; } .tf2-status.blue { background: #dbeafe; color: #1d4ed8; } .tf2-status.purple { background: #f3e8ff; color: #6b21a8; } .tf2-status.yellow { background: #fef9c3; color: #854d0e; }
+    .tf2-yard { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .tf2-yard-whse { border-radius: 20px; border: 1px solid #e2e8f0; background: #fff; padding: 13px; }
+    .tf2-yard-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .tf2-door-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+    .tf2-door { min-height: 78px; border-radius: 15px; padding: 9px; font-size: 11px; border: 1px solid #e2e8f0; background: #f8fafc; }
+    .tf2-door.occupied { background: linear-gradient(180deg, #ecfdf5, #f8fafc); border-color: #86efac; } .tf2-door.maintenance { background: #fef2f2; border-color: #fecaca; } .tf2-door.reserved { background: #fffbeb; border-color: #fde68a; }
+    .tf2-door-code { display: flex; justify-content: space-between; gap: 4px; font-weight: 900; color: #0f172a; }
+    .tf2-door-detail { color: #64748b; margin-top: 5px; line-height: 1.25; }
+    @media (max-width: 1180px) { .tf2-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tf2-layout, .tf2-warehouse-grid, .tf2-yard { grid-template-columns: 1fr; } .tf2-hero-content { flex-direction: column; } }
+    @media (max-width: 720px) { .tf2-mini-grid, .tf2-door-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tf2-kpi-grid { grid-template-columns: 1fr; } }
+  `}</style>;
+}
+
+function Panel({ title, subtitle, right, children, padded = false }) {
+  return <div className={`tf2-card ${padded ? 'pad' : ''}`}>
+    <div className="tf2-card-head">
+      <div><h2 className="tf2-card-title">{title}</h2>{subtitle ? <p className="tf2-card-sub">{subtitle}</p> : null}</div>
+      {right || null}
+    </div>
+    <div className="tf2-card-body">{children}</div>
+  </div>;
+}
+
+function StatusPill({ value }) {
+  return <span className={`tf2-status ${iconForStatus(value)}`}>{value || 'Open'}</span>;
+}
+
+function userName(data, userId) {
+  if (!userId) return 'System';
+  if (userId === 'system') return 'System';
+  return data.users?.find((u) => u.id === userId)?.name || userId;
+}
+
+function locationName(data, warehouseId, doorId) {
+  const warehouse = data.warehouses.find((w) => w.id === warehouseId)?.name || 'Yard';
+  const door = doorId ? data.doors.find((d) => d.id === doorId)?.code : '';
+  return door ? `${warehouse} • Door ${door}` : warehouse;
+}
+
 function StatCards({ stats, role }) {
   const cards = role === 'rnf'
     ? [
-      ['Active Trailers', stats.trailers, '🚛', 'blue'], ['Loaded', stats.loaded, '📦', 'green'], ['Empty', stats.empty, '⬜', 'purple'], ['In Transit', stats.transit, '➡️', 'orange'], ['Open Requests', stats.openRequests, '📋', 'blue']
+      ['Active Trailers', stats.trailers, '🚛', '#2563eb', 'RNF trailer fleet'], ['Loaded', stats.loaded, '📦', '#16a34a', 'Ready / staged'], ['Empty', stats.empty, '⬜', '#7c3aed', 'Available empties'], ['In Transit', stats.transit, '➡️', '#ea580c', 'Currently moving'], ['Open Requests', stats.openRequests, '📋', '#0891b2', 'Needs execution']
     ]
     : [
-      ['Total Trailers', stats.trailers, '🚛', 'blue'], ['Occupied Doors', `${stats.occupiedDoors}/${stats.totalDoors}`, '🚪', 'green'], ['Active Tasks', stats.activeTasks, '✅', 'purple'], ['Open Requests', stats.openRequests, '📋', 'orange'], ['Completed', stats.completed, '✔️', 'green']
+      ['Total Trailers', stats.trailers, '🚛', '#2563eb', 'All controlled units'], ['Occupied Doors', `${stats.occupiedDoors}/${stats.totalDoors}`, '🚪', '#16a34a', 'Current occupancy'], ['Active Tasks', stats.activeTasks, '✅', '#7c3aed', 'Assigned/in progress'], ['Open Requests', stats.openRequests, '📋', '#ea580c', 'Pending completion'], ['Completed', stats.completed, '✔️', '#059669', 'Finished requests']
     ];
-  return <div className="kpi-grid">{cards.map(([label, value, icon, color]) => <div className="kpi" key={label}><div className="icon" style={{ background: `var(--${color})` }}>{icon}</div><div className="label">{label}</div><div className="value">{value}</div></div>)}</div>;
+  return <div className="tf2-kpi-grid">{cards.map(([label, value, icon, color, note]) => <div className="tf2-kpi" key={label} style={{ '--tf2-accent': color, '--tf2-accent-soft': `${color}18`, '--tf2-accent-shadow': `${color}35` }}>
+    <div className="tf2-kpi-top"><div className="tf2-kpi-icon">{icon}</div><StatusPill value={label.includes('Open') ? 'Active' : label.includes('Completed') ? 'Completed' : 'Online'} /></div>
+    <div className="tf2-kpi-label">{label}</div><div className="tf2-kpi-value">{value}</div><div className="tf2-kpi-note">{note}</div>
+  </div>)}</div>;
+}
+
+function DashboardHero({ data, role = 'admin' }) {
+  const activeTasks = data.tasks.filter((t) => t.status !== 'Completed').length;
+  const occupied = data.doors.filter((d) => d.trailerId).length;
+  const title = role === 'rnf' ? 'RNF trailer visibility center' : 'HPW-RNF operations control center';
+  const copy = role === 'rnf'
+    ? 'Track RNF trailer locations, active requests, and shunter progress from one clean dashboard.'
+    : 'Monitor WHSE occupancy, open requests, shunter tasks, and recent movement activity in real time.';
+  return <div className="tf2-hero">
+    <div className="tf2-hero-content">
+      <div><div className="tf2-eyebrow">● Firestore Live • HPW-RNF Portal</div><h2>{title}</h2><p>{copy}</p></div>
+      <div className="tf2-hero-side">
+        <div className="tf2-live-chip"><span>Active tasks</span><strong>{activeTasks}</strong></div>
+        <div className="tf2-live-chip"><span>Door occupancy</span><strong>{occupied}/{data.doors.length}</strong></div>
+        <div className="tf2-live-chip"><span>Last refresh</span><strong>{timeOnly(nowISO())}</strong></div>
+      </div>
+    </div>
+  </div>;
 }
 
 function AdminDashboard({ store }) {
   const { data } = store;
   const stats = getStats(data);
-  return <div className="section-stack">
+  return <div className="tf2-dashboard">
+    <DashboardDesignStyles />
+    <DashboardHero data={data} />
     <StatCards stats={stats} />
-    <div className="grid-2">
-      <div className="card"><h2>Live Yard Map</h2><p className="card-sub">All warehouses and doors. One door can only have one trailer.</p><YardMap data={data} /></div>
-      <div className="card"><h2>Recent Activity</h2><ActivityList data={data} /></div>
+    <div className="tf2-layout">
+      <Panel title="Live trailer map" subtitle="Warehouse doors, occupancy, and trailer status." right={<StatusPill value="Online" />}><YardMap data={data} /></Panel>
+      <div className="tf2-stack">
+        <Panel title="Trailer status" subtitle="Current fleet condition."><TrailerStatusPanel data={data} /></Panel>
+        <Panel title="Recent activity" subtitle="Who did what, with timestamps."><ActivityList data={data} /></Panel>
+      </div>
     </div>
-    <div className="grid-2">
-      <div className="card"><h2>Open Requests</h2><RequestsTable data={data} limit={6} /></div>
-      <div className="card"><h2>Assigned Shunter Tasks</h2><TasksMini data={data} /></div>
+    <WarehouseOverview data={data} />
+    <div className="tf2-layout">
+      <Panel title="Open requests" subtitle="Pickup and empty trailer requests waiting to finish."><RequestsTable data={data} limit={6} /></Panel>
+      <Panel title="Active shunter tasks" subtitle="Work currently assigned or in progress."><TasksMini data={data} /></Panel>
     </div>
   </div>;
 }
@@ -638,33 +933,72 @@ function AdminDashboard({ store }) {
 function RNFDashboard({ user, store, search }) {
   const { data } = store;
   const stats = getStats(data, user.companyId);
-  return <div className="section-stack">
+  return <div className="tf2-dashboard">
+    <DashboardDesignStyles />
+    <DashboardHero data={data} role="rnf" />
     <StatCards stats={stats} role="rnf" />
-    <div className="grid-2">
-      <div className="card"><h2>RNF Trailer Locations</h2><p className="card-sub">RNF can view current location of RNF trailers only.</p><RNFTrailerLocations user={user} store={store} search={search} compact /></div>
-      <div className="card"><h2>My Active Requests</h2><RequestHistory user={user} store={store} compact /></div>
+    <div className="tf2-layout">
+      <Panel title="RNF live trailer locations" subtitle="RNF trailers only. Empty doors remain visible for context." right={<StatusPill value="Online" />}><RNFTrailerLocations user={user} store={store} search={search} compact /></Panel>
+      <div className="tf2-stack">
+        <Panel title="My active requests" subtitle="Auto-approved RNF requests and current status."><RequestHistory user={user} store={store} compact /></Panel>
+        <Panel title="RNF trailer status" subtitle="Loaded, empty, and in-transit count."><TrailerStatusPanel data={data} companyId={user.companyId} /></Panel>
+      </div>
     </div>
+  </div>;
+}
+
+function WarehouseOverview({ data }) {
+  return <Panel title="Warehouse overview" subtitle="Door utilization by WHSE.">
+    <div className="tf2-warehouse-grid">
+      {data.warehouses.map((w) => {
+        const doors = data.doors.filter((d) => d.warehouseId === w.id);
+        const occupied = doors.filter((d) => d.trailerId).length;
+        const pct = doors.length ? Math.round((occupied / doors.length) * 100) : 0;
+        return <div className="tf2-whse" key={w.id}>
+          <div className="tf2-whse-row"><div><div className="tf2-whse-name">{w.name}</div><div className="tf2-whse-code">Code {w.code}</div></div><StatusPill value={pct >= 85 ? 'High' : pct >= 50 ? 'Active' : 'Open'} /></div>
+          <div className="tf2-progress"><i style={{ width: `${pct}%` }} /></div>
+          <div className="tf2-mini-grid" style={{ marginTop: 12 }}>
+            <div className="tf2-mini"><strong>{occupied}</strong><span>Occupied</span></div>
+            <div className="tf2-mini"><strong>{doors.length - occupied}</strong><span>Open</span></div>
+            <div className="tf2-mini"><strong>{pct}%</strong><span>Used</span></div>
+          </div>
+        </div>;
+      })}
+    </div>
+  </Panel>;
+}
+
+function TrailerStatusPanel({ data, companyId = null }) {
+  const trailers = companyId ? data.trailers.filter((t) => t.companyId === companyId) : data.trailers;
+  const statuses = ['Loaded', 'Empty', 'In Transit', 'Maintenance'];
+  return <div className="tf2-stack">
+    {statuses.map((status) => {
+      const count = trailers.filter((t) => t.status === status).length;
+      const pct = trailers.length ? Math.round((count / trailers.length) * 100) : 0;
+      return <div key={status}>
+        <div className="tf2-whse-row"><span className="tf2-whse-name">{status}</span><StatusPill value={`${count} trailers`} /></div>
+        <div className="tf2-progress"><i style={{ width: `${pct}%` }} /></div>
+      </div>;
+    })}
   </div>;
 }
 
 function YardMap({ data, companyId = null }) {
   const trailersById = Object.fromEntries(data.trailers.map((t) => [t.id, t]));
   const companyById = Object.fromEntries(data.companies.map((c) => [c.id, c]));
-  return <div className="yard-grid">
+  return <div className="tf2-yard">
     {data.warehouses.map((w) => {
       const doors = data.doors.filter((d) => d.warehouseId === w.id);
       const visibleDoors = companyId ? doors.filter((d) => !d.trailerId || trailersById[d.trailerId]?.companyId === companyId) : doors;
-      return <div className="whse-card" key={w.id}>
-        <div className="whse-head"><strong>{w.name}</strong><span className="badge gray">{doors.filter((d) => d.trailerId).length}/{doors.length} occupied</span></div>
-        <div className="door-grid">
+      return <div className="tf2-yard-whse" key={w.id}>
+        <div className="tf2-yard-head"><div><div className="tf2-whse-name">{w.name}</div><div className="tf2-whse-code">{w.address || `Code ${w.code}`}</div></div><StatusPill value={`${doors.filter((d) => d.trailerId).length}/${doors.length}`} /></div>
+        <div className="tf2-door-grid">
           {visibleDoors.map((d) => {
             const t = d.trailerId ? trailersById[d.trailerId] : null;
             const css = d.status === 'Maintenance' ? 'maintenance' : d.trailerId ? 'occupied' : d.status === 'Reserved' ? 'reserved' : 'empty';
-            return <div className={`door-tile ${css}`} key={d.id}>
-              <div className="door-code"><span>{d.code}</span><span>{d.trailerId ? '🟢' : d.status === 'Maintenance' ? '🔴' : '⚪'}</span></div>
-              <div className="door-detail">
-                {t ? <><strong>{t.number}</strong><br />{companyById[t.companyId]?.name}<br />{t.status}</> : d.status}
-              </div>
+            return <div className={`tf2-door ${css}`} key={d.id}>
+              <div className="tf2-door-code"><span>{d.code}</span><span>{d.trailerId ? '🟢' : d.status === 'Maintenance' ? '🔴' : '⚪'}</span></div>
+              <div className="tf2-door-detail">{t ? <><strong>{t.number}</strong><br />{companyById[t.companyId]?.name}<br />{t.status}</> : d.status}</div>
             </div>;
           })}
         </div>
@@ -674,35 +1008,46 @@ function YardMap({ data, companyId = null }) {
 }
 
 function ActivityList({ data }) {
-  return <div className="activity-list">
-    {data.movements.slice(0, 8).map((m) => <div className="activity" key={m.id}>
-      <div className="activity-icon">{m.type === 'task' ? '✅' : m.type === 'request' ? '📦' : '↔️'}</div>
-      <div><strong>{m.message}</strong><span>{m.trailerId ? data.trailers.find((t) => t.id === m.trailerId)?.number : 'System activity'}</span></div>
-      <small>{timeOnly(m.createdAt)}</small>
-    </div>)}
+  const rows = data.movements.slice(0, 10);
+  if (!rows.length) return <div className="empty-state">No recent activity yet.</div>;
+  return <div className="tf2-activity">
+    {rows.map((m) => {
+      const trailer = m.trailerId ? data.trailers.find((t) => t.id === m.trailerId) : null;
+      return <div className="tf2-activity-item" key={m.id}>
+        <div className="tf2-activity-icon">{m.type === 'task' ? '✅' : m.type === 'request' ? '📦' : m.type === 'movement' ? '🚛' : '↔️'}</div>
+        <div><strong>{m.message}</strong><span>{userName(data, m.userId)} • {trailer ? `Trailer ${trailer.number}` : 'System activity'}</span></div>
+        <div className="tf2-time"><strong>{timeOnly(m.createdAt)}</strong><br />{dateOnly(m.createdAt)}</div>
+      </div>;
+    })}
   </div>;
 }
 
 function RequestsTable({ data, limit = 999 }) {
-  return <div className="table-wrap"><table><thead><tr><th>Request</th><th>Company</th><th>Route</th><th>Status</th><th>PO</th></tr></thead><tbody>
-    {data.requests.slice(0, limit).map((r) => <tr key={r.id}>
+  const rows = data.requests.filter((r) => r.status !== 'Completed').slice(0, limit);
+  if (!rows.length) return <div className="empty-state">No open requests.</div>;
+  return <div className="table-wrap"><table className="tf2-task-table"><thead><tr><th>Request</th><th>Company</th><th>Route</th><th>Status</th><th>PO</th></tr></thead><tbody>
+    {rows.map((r) => <tr key={r.id}>
       <td><strong>{r.id}</strong><br /><small>{r.type}</small></td>
       <td>{data.companies.find((c) => c.id === r.companyId)?.name}</td>
-      <td>{data.warehouses.find((w) => w.id === r.sourceWarehouseId)?.name || 'Yard'} → {data.warehouses.find((w) => w.id === r.destinationWarehouseId)?.name || '-'}</td>
-      <td><span className={`badge ${iconForStatus(r.status)}`}>{r.status}</span></td>
+      <td>{locationName(data, r.sourceWarehouseId, null)} → {locationName(data, r.destinationWarehouseId, null)}</td>
+      <td><StatusPill value={r.status} /></td>
       <td>{r.po || '-'}</td>
     </tr>)}
   </tbody></table></div>;
 }
 
 function TasksMini({ data }) {
-  return <div className="activity-list">
-    {data.tasks.filter((t) => t.status !== 'Completed').slice(0, 8).map((t) => <div className="activity" key={t.id}>
-      <div className="activity-icon">🚛</div>
-      <div><strong>{t.id} • {data.trailers.find((x) => x.id === t.trailerId)?.number || 'Trailer TBD'}</strong><span>{data.warehouses.find((w) => w.id === t.sourceWarehouseId)?.name || 'Yard'} → {data.warehouses.find((w) => w.id === t.destinationWarehouseId)?.name}</span></div>
-      <span className={`badge ${iconForStatus(t.status)}`}>{t.status}</span>
-    </div>)}
-  </div>;
+  const rows = data.tasks.filter((t) => t.status !== 'Completed').slice(0, 8);
+  if (!rows.length) return <div className="empty-state">No active shunter tasks.</div>;
+  return <div className="table-wrap"><table className="tf2-task-table"><thead><tr><th>Task</th><th>Trailer</th><th>Route</th><th>Assigned To</th><th>Status</th></tr></thead><tbody>
+    {rows.map((t) => <tr key={t.id}>
+      <td><strong>{t.id}</strong><br /><small>{t.po || 'No PO'} • {t.pallets || 0} pallets</small></td>
+      <td>{data.trailers.find((x) => x.id === t.trailerId)?.number || 'TBD'}</td>
+      <td>{locationName(data, t.sourceWarehouseId, t.sourceDoorId)} → {locationName(data, t.destinationWarehouseId, t.destinationDoorId)}</td>
+      <td>{userName(data, t.assignedTo)}</td>
+      <td><StatusPill value={t.status} /></td>
+    </tr>)}
+  </tbody></table></div>;
 }
 
 function Warehouses({ user, store }) {
@@ -884,8 +1229,14 @@ function AdminRequests({ user, store }) {
 function ShunterTasks({ user, store, completedOnly = false, search = '' }) {
   const data = store.data;
   const [dropDoor, setDropDoor] = useState({});
-  const tasks = data.tasks.filter((t) => t.assignedTo === user.id && (completedOnly ? t.status === 'Completed' : t.status !== 'Completed') && `${t.id} ${t.po} ${data.trailers.find((x) => x.id === t.trailerId)?.number || ''}`.toLowerCase().includes(search.toLowerCase()));
-  if (!tasks.length) return <div className="empty-state">No {completedOnly ? 'completed' : 'active'} tasks found.</div>;
+  // Show all active tasks to shunter, so tasks are not hidden by Firebase UID vs demo ID.
+  const tasks = data.tasks.filter((t) =>
+    (completedOnly ? t.status === 'Completed' : t.status !== 'Completed') &&
+    `${t.id} ${t.po || ''} ${data.trailers.find((x) => x.id === t.trailerId)?.number || ''}`
+      .toLowerCase()
+      .includes(search.toLowerCase())
+  );
+  if (!tasks.length) return <div className="empty-state">No {completedOnly ? 'completed' : 'active'} tasks found.<br />Create a request from RNF or assign a request from Admin.</div>;
   return <div className="task-list">{tasks.map((task) => {
     const trailer = data.trailers.find((t) => t.id === task.trailerId);
     const availableDoors = data.doors.filter((d) => !d.trailerId && d.warehouseId === task.destinationWarehouseId && d.status !== 'Maintenance');
