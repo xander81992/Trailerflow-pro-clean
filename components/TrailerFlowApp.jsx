@@ -786,7 +786,7 @@ function getNav(role) {
     { id: 'dashboard', label: 'RNF Dashboard', icon: '📊' },
     { id: 'bookPickup', label: 'Book Pickup', icon: '📦' },
     { id: 'emptyRequest', label: 'Request Empty', icon: '🚛' },
-    { id: 'locations', label: 'Trailer Locations', icon: '📍' },
+    { id: 'locations', label: 'Yard Visibility', icon: '🗺️' },
     { id: 'history', label: 'My Requests', icon: '📜' }
   ];
   return [
@@ -803,7 +803,7 @@ function getNav(role) {
 
 function topbarCopy(role, page) {
   if (role === 'shunter') return 'Assigned jobs only. Follow the task steps and timestamps will be recorded.';
-  if (role === 'rnf') return 'Create intercompany requests and view RNF trailer locations in real time.';
+  if (role === 'rnf') return 'Create intercompany requests and view live yard map, warehouse overview, and door utilization.';
   if (page === 'dashboard') return 'Live yard status, open requests, shunter tasks and RNF activity.';
   return 'Manage the master data and workflow used by the portal.';
 }
@@ -817,7 +817,7 @@ function PageRouter({ user, page, search, store }) {
   if (user.role === 'rnf') {
     if (page === 'bookPickup') return <RequestForm user={user} store={store} type="pickup" />;
     if (page === 'emptyRequest') return <RequestForm user={user} store={store} type="empty" />;
-    if (page === 'locations') return <RNFTrailerLocations user={user} store={store} search={search} />;
+    if (page === 'locations') return <RNFYardVisibilityPage user={user} store={store} search={search} />;
     if (page === 'history') return <RequestHistory user={user} store={store} />;
     return <RNFDashboard user={user} store={store} search={search} />;
   }
@@ -1019,13 +1019,96 @@ function RNFDashboard({ user, store, search }) {
     <DashboardDesignStyles />
     <DashboardHero data={data} role="rnf" />
     <StatCards stats={stats} role="rnf" />
+
     <div className="tf2-layout">
-      <Panel title="RNF live trailer locations" subtitle="RNF trailers only. Empty doors remain visible for context." right={<StatusPill value="Online" />}><RNFTrailerLocations user={user} store={store} search={search} compact /></Panel>
+      <Panel
+        title="Live trailer map"
+        subtitle="Same yard visibility as HPW: all WHSE doors, occupied locations, empty doors, reserved doors, and maintenance doors."
+        right={<StatusPill value="Online" />}
+      >
+        <YardMap data={data} />
+      </Panel>
+
       <div className="tf2-stack">
-        <Panel title="My active requests" subtitle="Auto-approved RNF requests and current status."><RequestHistory user={user} store={store} compact /></Panel>
-        <Panel title="RNF trailer status" subtitle="Loaded, empty, and in-transit count."><TrailerStatusPanel data={data} companyId={user.companyId} /></Panel>
+        <Panel title="Door utilization by WHSE" subtitle="Occupied vs open door count across every warehouse.">
+          <WarehouseUtilizationMini data={data} />
+        </Panel>
+        <Panel title="Recent activity" subtitle="Latest trailer movement and request activity.">
+          <ActivityList data={data} />
+        </Panel>
       </div>
     </div>
+
+    <WarehouseOverview data={data} />
+
+    <div className="tf2-layout">
+      <Panel title="My active requests" subtitle="Auto-approved RNF requests and current status.">
+        <RequestHistory user={user} store={store} compact />
+      </Panel>
+      <Panel title="RNF trailer status" subtitle="Loaded, empty, maintenance, and in-transit count.">
+        <TrailerStatusPanel data={data} companyId={user.companyId} />
+      </Panel>
+    </div>
+  </div>;
+}
+
+function RNFYardVisibilityPage({ user, store, search }) {
+  const { data } = store;
+  return <div className="tf2-dashboard">
+    <DashboardDesignStyles />
+    <DashboardHero data={data} role="rnf" />
+
+    <div className="tf2-layout">
+      <Panel
+        title="Live trailer map"
+        subtitle="All WHSE doors are visible, including occupied, empty, reserved, and maintenance doors."
+        right={<StatusPill value="Online" />}
+      >
+        <YardMap data={data} />
+      </Panel>
+
+      <div className="tf2-stack">
+        <Panel title="Door utilization by WHSE" subtitle="Same utilization view as HPW/Admin.">
+          <WarehouseUtilizationMini data={data} />
+        </Panel>
+        <Panel title="Recent activity" subtitle="Latest request and trailer movement activity.">
+          <ActivityList data={data} />
+        </Panel>
+      </div>
+    </div>
+
+    <WarehouseOverview data={data} />
+
+    <div className="tf2-layout">
+      <Panel title="My active requests" subtitle="RNF pickup and empty trailer request status.">
+        <RequestHistory user={user} store={store} compact />
+      </Panel>
+      <Panel title="RNF trailer status" subtitle="Loaded, empty, maintenance, and in-transit count.">
+        <TrailerStatusPanel data={data} companyId={user.companyId} />
+      </Panel>
+    </div>
+  </div>;
+}
+
+function WarehouseUtilizationMini({ data }) {
+  return <div className="tf2-stack">
+    {data.warehouses.map((w) => {
+      const doors = data.doors.filter((d) => d.warehouseId === w.id);
+      const occupied = doors.filter((d) => d.trailerId).length;
+      const maintenance = doors.filter((d) => d.status === 'Maintenance').length;
+      const open = doors.length - occupied - maintenance;
+      const pct = doors.length ? Math.round((occupied / doors.length) * 100) : 0;
+      return <div key={w.id}>
+        <div className="tf2-whse-row">
+          <div>
+            <span className="tf2-whse-name">{w.name}</span>
+            <div className="tf2-whse-code">{occupied} occupied • {open} open • {maintenance} maintenance</div>
+          </div>
+          <StatusPill value={`${pct}% used`} />
+        </div>
+        <div className="tf2-progress"><i style={{ width: `${pct}%` }} /></div>
+      </div>;
+    })}
   </div>;
 }
 
