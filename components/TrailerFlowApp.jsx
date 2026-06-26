@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useEffect } from 'react';
 import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import { auth, db, isFirebaseConfigured } from '../lib/firebase';
 
 const FIRESTORE_DATA_COLLECTION = 'portalData';
@@ -23,8 +23,7 @@ function createSeed() {
 
   const users = [
     { id: 'u-admin', name: 'Alexander Admin', email: 'admin@hopewell.local', role: 'admin', companyId: 'hopewell', active: true },
-    { id: 'u-rnf', name: 'RNF Requestor', email: 'rnf@rnf.local', role: 'rnf', companyId: 'rnf', active: true },
-    { id: 'u-shunter', name: 'John Shunter', email: 'shunter@hopewell.local', role: 'shunter', companyId: 'hopewell', active: true }
+    { id: 'u-rnf', name: 'RNF Requestor', email: 'rnf@rnf.local', role: 'rnf', companyId: 'rnf', active: true }
   ];
 
   const whseTemplates = [
@@ -100,12 +99,12 @@ function createSeed() {
 
   const tasks = [
     {
-      id: 'TASK-1001', requestId: 'PK-2026-000001', type: 'pickup', companyId: 'rnf', assignedTo: 'u-shunter', status: 'Assigned',
+      id: 'TASK-1001', requestId: 'PK-2026-000001', type: 'pickup', companyId: 'rnf', assignedTo: null, status: 'Assigned',
       trailerId: 't-001', sourceWarehouseId: 'w-a', sourceDoorId: 'd-a-1', destinationWarehouseId: 'w-c', destinationDoorId: null,
       po: '4500123456', pallets: 25, notes: 'Move from WHSE A to WHSE C.', dueTime: '10:00 AM', createdAt: nowISO(), timestamps: { Assigned: nowISO() }
     },
     {
-      id: 'TASK-1002', requestId: 'ET-2026-000001', type: 'empty', companyId: 'rnf', assignedTo: 'u-shunter', status: 'Assigned',
+      id: 'TASK-1002', requestId: 'ET-2026-000001', type: 'empty', companyId: 'rnf', assignedTo: null, status: 'Assigned',
       trailerId: 't-006', sourceWarehouseId: null, sourceDoorId: null, destinationWarehouseId: 'w-b', destinationDoorId: null,
       po: '', pallets: 0, notes: 'Deliver empty trailer to WHSE B.', dueTime: '11:30 AM', createdAt: nowISO(), timestamps: { Assigned: nowISO() }
     }
@@ -115,16 +114,80 @@ function createSeed() {
 
   const movements = [
     { id: uid('M'), type: 'request', message: 'RNF pickup request PK-2026-000001 auto approved.', userId: 'system', createdAt: nowISO(), trailerId: 't-001' },
-    { id: uid('M'), type: 'task', message: 'Task TASK-1001 assigned to John Shunter.', userId: 'system', createdAt: nowISO(), trailerId: 't-001' }
+    { id: uid('M'), type: 'task', message: 'Task TASK-1001 added to the shunter queue.', userId: 'system', createdAt: nowISO(), trailerId: 't-001' }
   ];
 
   return { companies, users, warehouses, doors, trailers, requests, tasks, movements, invitations: [] };
+}
+
+const DEMO_USER_IDS = new Set(['u-admin', 'u-rnf', 'u-shunter']);
+
+function companyToId(company) {
+  const value = String(company || '').toLowerCase();
+  if (value.includes('rnf')) return 'rnf';
+  return 'hopewell';
+}
+
+function normalizeAuthUser(docId, profile = {}) {
+  const role = String(profile.role || '').toLowerCase() || 'rnf';
+  return {
+    id: docId,
+    name: profile.name || profile.email || 'Portal User',
+    email: profile.email || '',
+    role,
+    companyId: profile.companyId || companyToId(profile.company),
+    active: profile.active !== false
+  };
+}
+
+function cleanDemoReferences(input) {
+  const copy = structuredClone(input || createSeed());
+  copy.users = (copy.users || []).filter((u) => u?.id !== 'u-shunter' && u?.name !== 'John Shunter');
+  copy.tasks = (copy.tasks || []).map((t) => ({
+    ...t,
+    assignedTo: t.assignedTo === 'u-shunter' ? null : t.assignedTo
+  }));
+  copy.movements = (copy.movements || []).map((m) => ({
+    ...m,
+    userId: m.userId === 'u-shunter' ? null : m.userId,
+    message: String(m.message || '').replaceAll('John Shunter', 'the shunter queue')
+  }));
+  return copy;
+}
+
+function mergePortalUsers(data, authUsers = []) {
+  const cleaned = cleanDemoReferences(data);
+  const usersById = new Map();
+  (cleaned.users || [])
+    .filter((u) => !DEMO_USER_IDS.has(u.id) && u.name !== 'John Shunter')
+    .forEach((u) => usersById.set(u.id, u));
+  authUsers
+    .filter((u) => u.active !== false)
+    .forEach((u) => usersById.set(u.id, u));
+  return { ...cleaned, users: Array.from(usersById.values()) };
+}
+
+function assigneeName(data, assignedTo) {
+  if (!assignedTo || assignedTo === 'u-shunter') return 'Unassigned / Queue';
+  return data.users?.find((u) => u.id === assignedTo)?.name || 'Assigned Shunter';
 }
 
 function useTrailerData() {
   const [data, setData] = useState(createSeed);
   const [toast, setToast] = useState('');
   const [dataReady, setDataReady] = useState(false);
+  const [authUsers, setAuthUsers] = useState([]);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured || !db) return;
+    const unsub = onSnapshot(collection(db, 'users'), (snap) => {
+      const liveUsers = snap.docs.map((d) => normalizeAuthUser(d.id, d.data()));
+      setAuthUsers(liveUsers);
+    }, (error) => {
+      console.error('Firestore users load error:', error);
+    });
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     if (!isFirebaseConfigured || !db) {
@@ -137,11 +200,11 @@ function useTrailerData() {
     const unsub = onSnapshot(ref, async (snap) => {
       if (snap.exists()) {
         const cloud = snap.data();
-        setData(cloud.data || cloud);
+        setData(cleanDemoReferences(cloud.data || cloud));
       } else {
         const seed = createSeed();
         await setDoc(ref, { data: seed, updatedAt: nowISO(), createdAt: nowISO() });
-        setData(seed);
+        setData(cleanDemoReferences(seed));
       }
       setDataReady(true);
     }, (error) => {
@@ -168,7 +231,7 @@ function useTrailerData() {
   const update = (fn, message) => {
     // Run validation before React state update so button try/catch can show alerts
     // instead of crashing the whole page.
-    const copy = structuredClone(data);
+    const copy = structuredClone(mergePortalUsers(data, authUsers));
     fn(copy);
     setData(copy);
     saveToFirestore(copy).catch((error) => {
@@ -343,7 +406,7 @@ function useTrailerData() {
       const sourceDoorId = trailerId ? copy.trailers.find((t) => t.id === trailerId)?.doorId || null : null;
       const sourceWarehouseId = request.sourceWarehouseId || (trailerId ? copy.trailers.find((t) => t.id === trailerId)?.warehouseId : null);
       const task = {
-        id: uid('TASK'), requestId: request.id, type: request.type, companyId: request.companyId, assignedTo: 'u-shunter', status: 'Assigned',
+        id: uid('TASK'), requestId: request.id, type: request.type, companyId: request.companyId, assignedTo: null, status: 'Assigned',
         trailerId, sourceWarehouseId, sourceDoorId, destinationWarehouseId: request.destinationWarehouseId, destinationDoorId: null,
         po: request.po, pallets: request.pallets, notes: request.notes, dueTime: request.appointment || 'Today', createdAt: nowISO(), timestamps: { Assigned: nowISO() }
       };
@@ -418,7 +481,9 @@ function useTrailerData() {
     setToast('Portal data reset.');
   };
 
-  return { data, dataReady, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
+  const visibleData = useMemo(() => mergePortalUsers(data, authUsers), [data, authUsers]);
+
+  return { data: visibleData, dataReady, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
 }
 
 function iconForStatus(status) {
@@ -836,14 +901,30 @@ function DashboardDesignStyles() {
     .tf2-task-table td:last-child { border-right: 1px solid #e2e8f0; border-radius: 0 16px 16px 0; }
     .tf2-status { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 800; background: #eef2ff; color: #3730a3; }
     .tf2-status.green { background: #dcfce7; color: #166534; } .tf2-status.orange { background: #ffedd5; color: #9a3412; } .tf2-status.red { background: #fee2e2; color: #991b1b; } .tf2-status.gray { background: #f1f5f9; color: #475569; } .tf2-status.blue { background: #dbeafe; color: #1d4ed8; } .tf2-status.purple { background: #f3e8ff; color: #6b21a8; } .tf2-status.yellow { background: #fef9c3; color: #854d0e; }
-    .tf2-yard { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .tf2-yard-whse { border-radius: 20px; border: 1px solid #e2e8f0; background: #fff; padding: 13px; }
-    .tf2-yard-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-    .tf2-door-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-    .tf2-door { min-height: 78px; border-radius: 15px; padding: 9px; font-size: 11px; border: 1px solid #e2e8f0; background: #f8fafc; }
-    .tf2-door.occupied { background: linear-gradient(180deg, #ecfdf5, #f8fafc); border-color: #86efac; } .tf2-door.maintenance { background: #fef2f2; border-color: #fecaca; } .tf2-door.reserved { background: #fffbeb; border-color: #fde68a; }
-    .tf2-door-code { display: flex; justify-content: space-between; gap: 4px; font-weight: 900; color: #0f172a; }
-    .tf2-door-detail { color: #64748b; margin-top: 5px; line-height: 1.25; }
+    .tf2-yard { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .tf2-yard-whse { position: relative; overflow: hidden; border-radius: 24px; border: 1px solid rgba(148,163,184,.22); background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%); padding: 16px; box-shadow: 0 16px 34px rgba(15,23,42,.08); }
+    .tf2-yard-whse:after { content: ''; position: absolute; right: -28px; top: -24px; width: 120px; height: 120px; border-radius: 999px; background: rgba(59,130,246,.08); }
+    .tf2-yard-head { position: relative; z-index: 1; display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; margin-bottom: 12px; }
+    .tf2-yard-head-left { display: grid; gap: 8px; }
+    .tf2-yard-substats { display: flex; flex-wrap: wrap; gap: 8px; }
+    .tf2-yard-stat { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 7px 11px; background: #eff6ff; color: #1d4ed8; font-size: 11px; font-weight: 800; border: 1px solid #bfdbfe; }
+    .tf2-yard-stat.green { background: #ecfdf5; color: #15803d; border-color: #bbf7d0; }
+    .tf2-yard-stat.purple { background: #f5f3ff; color: #7c3aed; border-color: #ddd6fe; }
+    .tf2-door-grid { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .tf2-door { min-height: 118px; border-radius: 18px; padding: 12px; font-size: 11px; border: 1px solid #e2e8f0; background: linear-gradient(180deg, #f8fafc, #ffffff); box-shadow: inset 0 1px 0 rgba(255,255,255,.8); display: flex; flex-direction: column; justify-content: space-between; gap: 10px; }
+    .tf2-door.occupied { background: linear-gradient(180deg, #ecfdf5 0%, #ffffff 100%); border-color: #86efac; box-shadow: 0 10px 18px rgba(34,197,94,.10); } .tf2-door.maintenance { background: linear-gradient(180deg, #fef2f2 0%, #ffffff 100%); border-color: #fecaca; } .tf2-door.reserved { background: linear-gradient(180deg, #fffbeb 0%, #ffffff 100%); border-color: #fde68a; } .tf2-door.empty { background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%); border-color: #bfdbfe; }
+    .tf2-door-top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+    .tf2-door-code { display: grid; gap: 2px; font-weight: 900; color: #0f172a; }
+    .tf2-door-code small { color: #64748b; font-size: 10px; font-weight: 700; }
+    .tf2-door-state { width: 30px; height: 30px; border-radius: 12px; display: grid; place-items: center; font-size: 15px; background: rgba(255,255,255,.9); border: 1px solid rgba(148,163,184,.16); }
+    .tf2-door-detail { color: #475569; line-height: 1.3; display: grid; gap: 6px; }
+    .tf2-door-detail strong { font-size: 15px; color: #0f172a; letter-spacing: -.02em; }
+    .tf2-door-detail .muted { color: #64748b; font-size: 11px; }
+    .tf2-door-pill { display: inline-flex; align-items: center; justify-content: center; align-self: flex-start; border-radius: 999px; padding: 6px 10px; background: rgba(15,23,42,.06); color: #334155; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+    .tf2-door.occupied .tf2-door-pill { background: #dcfce7; color: #166534; }
+    .tf2-door.reserved .tf2-door-pill { background: #fef3c7; color: #92400e; }
+    .tf2-door.maintenance .tf2-door-pill { background: #fee2e2; color: #991b1b; }
+    .tf2-door.empty .tf2-door-pill { background: #dbeafe; color: #1d4ed8; }
     @media (max-width: 1180px) { .tf2-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tf2-layout, .tf2-warehouse-grid, .tf2-yard { grid-template-columns: 1fr; } .tf2-hero-content { flex-direction: column; } }
     @media (max-width: 720px) { .tf2-mini-grid, .tf2-door-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tf2-kpi-grid { grid-template-columns: 1fr; } }
   `}</style>;
@@ -866,7 +947,8 @@ function StatusPill({ value }) {
 function userName(data, userId) {
   if (!userId) return 'System';
   if (userId === 'system') return 'System';
-  return data.users?.find((u) => u.id === userId)?.name || userId;
+  if (userId === 'u-shunter') return 'Unassigned / Queue';
+  return data.users?.find((u) => u.id === userId)?.name || 'Portal User';
 }
 
 function locationName(data, warehouseId, doorId) {
@@ -990,15 +1072,33 @@ function YardMap({ data, companyId = null }) {
     {data.warehouses.map((w) => {
       const doors = data.doors.filter((d) => d.warehouseId === w.id);
       const visibleDoors = companyId ? doors.filter((d) => !d.trailerId || trailersById[d.trailerId]?.companyId === companyId) : doors;
+      const occupiedCount = visibleDoors.filter((d) => d.trailerId).length;
+      const emptyCount = visibleDoors.filter((d) => !d.trailerId && d.status !== 'Maintenance').length;
+      const rnfCount = visibleDoors.filter((d) => d.trailerId && trailersById[d.trailerId]?.companyId === companyId).length;
       return <div className="tf2-yard-whse" key={w.id}>
-        <div className="tf2-yard-head"><div><div className="tf2-whse-name">{w.name}</div><div className="tf2-whse-code">{w.address || `Code ${w.code}`}</div></div><StatusPill value={`${doors.filter((d) => d.trailerId).length}/${doors.length}`} /></div>
+        <div className="tf2-yard-head">
+          <div className="tf2-yard-head-left">
+            <div><div className="tf2-whse-name">{w.name}</div><div className="tf2-whse-code">{w.address || `Code ${w.code}`}</div></div>
+            <div className="tf2-yard-substats">
+              <span className="tf2-yard-stat">🚪 {occupiedCount}/{visibleDoors.length || 0} occupied</span>
+              <span className="tf2-yard-stat green">✨ {emptyCount} open doors</span>
+              {companyId ? <span className="tf2-yard-stat purple">🚛 {rnfCount} RNF trailers</span> : null}
+            </div>
+          </div>
+          <StatusPill value={`${occupiedCount}/${visibleDoors.length || 0}`} />
+        </div>
         <div className="tf2-door-grid">
           {visibleDoors.map((d) => {
             const t = d.trailerId ? trailersById[d.trailerId] : null;
             const css = d.status === 'Maintenance' ? 'maintenance' : d.trailerId ? 'occupied' : d.status === 'Reserved' ? 'reserved' : 'empty';
+            const icon = d.status === 'Maintenance' ? '🛠️' : d.trailerId ? '🚛' : d.status === 'Reserved' ? '🕒' : '✨';
             return <div className={`tf2-door ${css}`} key={d.id}>
-              <div className="tf2-door-code"><span>{d.code}</span><span>{d.trailerId ? '🟢' : d.status === 'Maintenance' ? '🔴' : '⚪'}</span></div>
-              <div className="tf2-door-detail">{t ? <><strong>{t.number}</strong><br />{companyById[t.companyId]?.name}<br />{t.status}</> : d.status}</div>
+              <div className="tf2-door-top">
+                <div className="tf2-door-code"><span>{d.code}</span><small>{w.code} door</small></div>
+                <div className="tf2-door-state">{icon}</div>
+              </div>
+              <div className="tf2-door-detail">{t ? <><strong>{t.number}</strong><span className="muted">{companyById[t.companyId]?.name}</span><span className="muted">{t.status}</span></> : <><strong>{d.status === 'Maintenance' ? 'Maintenance' : d.status === 'Reserved' ? 'Reserved' : 'Empty Door'}</strong><span className="muted">{d.status === 'Maintenance' ? 'Unavailable for moves' : d.status === 'Reserved' ? 'Held for an upcoming move' : 'Available for trailer assignment'}</span></>}</div>
+              <div className="tf2-door-pill">{t ? 'Trailer on door' : d.status === 'Maintenance' ? 'Blocked' : d.status === 'Reserved' ? 'Reserved' : 'Available'}</div>
             </div>;
           })}
         </div>
@@ -1275,7 +1375,7 @@ function AdminTasks({ user, store, search }) {
 }
 function ShunterTaskTable({ data, search }) {
   const rows = data.tasks.filter((t) => `${t.id} ${t.po} ${data.trailers.find((x) => x.id === t.trailerId)?.number || ''}`.toLowerCase().includes(search.toLowerCase()));
-  return <div className="table-wrap"><table><thead><tr><th>Task</th><th>Trailer</th><th>Route</th><th>Assigned To</th><th>Status</th></tr></thead><tbody>{rows.map((t) => <tr key={t.id}><td><strong>{t.id}</strong><br /><small>{t.po || '-'}</small></td><td>{data.trailers.find((x) => x.id === t.trailerId)?.number || 'TBD'}</td><td>{data.warehouses.find((w) => w.id === t.sourceWarehouseId)?.name || 'Yard'} → {data.warehouses.find((w) => w.id === t.destinationWarehouseId)?.name || '-'}</td><td>{data.users.find((u) => u.id === t.assignedTo)?.name || '-'}</td><td><span className={`badge ${iconForStatus(t.status)}`}>{t.status}</span></td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>Task</th><th>Trailer</th><th>Route</th><th>Assigned To</th><th>Status</th></tr></thead><tbody>{rows.map((t) => <tr key={t.id}><td><strong>{t.id}</strong><br /><small>{t.po || '-'}</small></td><td>{data.trailers.find((x) => x.id === t.trailerId)?.number || 'TBD'}</td><td>{data.warehouses.find((w) => w.id === t.sourceWarehouseId)?.name || 'Yard'} → {data.warehouses.find((w) => w.id === t.destinationWarehouseId)?.name || '-'}</td><td>{assigneeName(data, t.assignedTo)}</td><td><span className={`badge ${iconForStatus(t.status)}`}>{t.status}</span></td></tr>)}</tbody></table></div>;
 }
 
 function UsersInvites({ user, store }) {
