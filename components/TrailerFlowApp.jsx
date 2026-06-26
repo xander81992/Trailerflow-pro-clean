@@ -2,10 +2,11 @@
 
 import { useMemo, useState, useEffect } from 'react';
 import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import { auth, db, isFirebaseConfigured } from '../lib/firebase';
 
-const STORE_KEY = 'trailerflow-pro-clean-v1';
+const FIRESTORE_DATA_COLLECTION = 'portalData';
+const FIRESTORE_DATA_DOC = 'main';
 const nowISO = () => new Date().toISOString();
 const timeOnly = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const dateOnly = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
@@ -27,6 +28,7 @@ function createSeed() {
   const users = [
     { id: 'u-admin', name: 'Alexander Admin', email: 'admin@hopewell.local', role: 'admin', companyId: 'hopewell', active: true },
     { id: 'u-rnf', name: 'RNF Requestor', email: 'rnf@rnf.local', role: 'rnf', companyId: 'rnf', active: true },
+    { id: 'u-shunter', name: 'John Shunter', email: 'shunter@hopewell.local', role: 'shunter', companyId: 'hopewell', active: true }
   ];
 
   const whseTemplates = [
@@ -57,27 +59,24 @@ function createSeed() {
     }
   });
 
-  const trailers = [];
-  for (let i = 1; i <= 30; i++) {
-    trailers.push({
-      id: `t-${String(i).padStart(3, '0')}`,
-      number: `TR-${String(i).padStart(3, '0')}`,
-      plate: `RNF-${1000 + i}`,
-      companyId: 'rnf',
-      status: i % 6 === 0 ? 'Empty' : i % 7 === 0 ? 'In Transit' : 'Loaded',
-      warehouseId: null,
-      doorId: null,
-      activeTaskId: null,
-      notes: '',
-      lastMovedAt: nowISO()
-    });
-  }
+  const trailerNumbers = ['1209', '1206', '1185', 'L1182', 'L1178', '1204', '1195', '1205', 'L1177', '1220', '1221', 'L1181', '1207', '1210', '1161', '1157'];
+  const trailers = trailerNumbers.map((number, index) => ({
+    id: `t-${String(index + 1).padStart(3, '0')}`,
+    number,
+    plate: '',
+    companyId: 'rnf',
+    status: index % 6 === 0 ? 'Empty' : index % 7 === 0 ? 'In Transit' : 'Loaded',
+    warehouseId: null,
+    doorId: null,
+    activeTaskId: null,
+    notes: '',
+    lastMovedAt: nowISO()
+  }));
 
   const assignPairs = [
     ['t-001', 'd-a-1'], ['t-002', 'd-a-3'], ['t-003', 'd-a-5'], ['t-004', 'd-b-2'], ['t-005', 'd-b-4'],
     ['t-008', 'd-c-1'], ['t-009', 'd-c-3'], ['t-010', 'd-d-1'], ['t-011', 'd-e-2'], ['t-012', 'd-f-1'],
-    ['t-013', 'd-f-3'], ['t-014', 'd-e-5'], ['t-015', 'd-c-5'], ['t-016', 'd-a-7'], ['t-017', 'd-b-6'],
-    ['t-018', 'd-d-3'], ['t-019', 'd-e-7'], ['t-020', 'd-f-5']
+    ['t-013', 'd-f-3'], ['t-014', 'd-e-5'], ['t-015', 'd-c-5'], ['t-016', 'd-a-7']
   ];
   assignPairs.forEach(([trailerId, doorId]) => {
     const door = doors.find((d) => d.id === doorId);
@@ -105,12 +104,12 @@ function createSeed() {
 
   const tasks = [
     {
-      id: 'TASK-1001', requestId: 'PK-2026-000001', type: 'pickup', companyId: 'rnf', assignedTo: null, status: 'Assigned',
+      id: 'TASK-1001', requestId: 'PK-2026-000001', type: 'pickup', companyId: 'rnf', assignedTo: 'u-shunter', status: 'Assigned',
       trailerId: 't-001', sourceWarehouseId: 'w-a', sourceDoorId: 'd-a-1', destinationWarehouseId: 'w-c', destinationDoorId: null,
       po: '4500123456', pallets: 25, notes: 'Move from WHSE A to WHSE C.', dueTime: '10:00 AM', createdAt: nowISO(), timestamps: { Assigned: nowISO() }
     },
     {
-      id: 'TASK-1002', requestId: 'ET-2026-000001', type: 'empty', companyId: 'rnf', assignedTo: null, status: 'Assigned',
+      id: 'TASK-1002', requestId: 'ET-2026-000001', type: 'empty', companyId: 'rnf', assignedTo: 'u-shunter', status: 'Assigned',
       trailerId: 't-006', sourceWarehouseId: null, sourceDoorId: null, destinationWarehouseId: 'w-b', destinationDoorId: null,
       po: '', pallets: 0, notes: 'Deliver empty trailer to WHSE B.', dueTime: '11:30 AM', createdAt: nowISO(), timestamps: { Assigned: nowISO() }
     }
@@ -119,54 +118,50 @@ function createSeed() {
   trailers.find((t) => t.id === 't-006').activeTaskId = 'TASK-1002';
 
   const movements = [
-    { id: uid('M'), type: 'request', message: 'RNF pickup request PK-2026-000001 auto approved.', userId: 'system', actorName: 'System', actorRole: 'system', actorEmail: '', createdAt: nowISO(), trailerId: 't-001' },
-    { id: uid('M'), type: 'task', message: 'Task TASK-1001 created and waiting for shunter assignment.', userId: 'system', actorName: 'System', actorRole: 'system', actorEmail: '', createdAt: nowISO(), trailerId: 't-001' }
+    { id: uid('M'), type: 'request', message: 'RNF pickup request PK-2026-000001 auto approved.', userId: 'system', createdAt: nowISO(), trailerId: 't-001' },
+    { id: uid('M'), type: 'task', message: 'Task TASK-1001 assigned to John Shunter.', userId: 'system', createdAt: nowISO(), trailerId: 't-001' }
   ];
 
   return { companies, users, warehouses, doors, trailers, requests, tasks, movements, invitations: [] };
 }
 
-function getInitialData() {
-  if (typeof window === 'undefined') return createSeed();
-  try {
-    const stored = localStorage.getItem(STORE_KEY);
-    return stored ? JSON.parse(stored) : createSeed();
-  } catch {
-    return createSeed();
-  }
-}
-
 function useTrailerData() {
-  const [data, setData] = useState(getInitialData);
-  const [sharedMovements, setSharedMovements] = useState([]);
-  const [sharedUsers, setSharedUsers] = useState([]);
+  const [data, setData] = useState(createSeed);
+  const [directoryUsers, setDirectoryUsers] = useState([]);
   const [toast, setToast] = useState('');
+  const [dataReady, setDataReady] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem(STORE_KEY, JSON.stringify(data));
-  }, [data]);
+    if (!isFirebaseConfigured || !db) {
+      setDataReady(true);
+      return;
+    }
 
-  useEffect(() => {
-    if (!db) return undefined;
-    const activityQuery = query(collection(db, 'activityLogs'), orderBy('createdAt', 'desc'), limit(50));
-    return onSnapshot(activityQuery, (snapshot) => {
-      setSharedMovements(snapshot.docs.map((activityDoc) => {
-        const activity = activityDoc.data();
-        return {
-          ...activity,
-          id: activityDoc.id,
-          createdAt: activity.createdAt?.toDate?.().toISOString() || activity.clientCreatedAt || nowISO()
-        };
-      }));
+    const ref = doc(db, FIRESTORE_DATA_COLLECTION, FIRESTORE_DATA_DOC);
+
+    const unsub = onSnapshot(ref, async (snap) => {
+      if (snap.exists()) {
+        const cloud = snap.data();
+        setData(cloud.data || cloud);
+      } else {
+        const seed = createSeed();
+        await setDoc(ref, { data: seed, updatedAt: nowISO(), createdAt: nowISO() });
+        setData(seed);
+      }
+      setDataReady(true);
     }, (error) => {
-      console.error('Unable to load shared activity log:', error);
+      console.error('Firestore data load error:', error);
+      setToast('Could not load Firestore data. Check Firestore rules.');
+      setDataReady(true);
     });
+
+    return () => unsub();
   }, []);
 
   useEffect(() => {
-    if (!db) return undefined;
+    if (!isFirebaseConfigured || !db) return undefined;
     return onSnapshot(collection(db, 'users'), (snapshot) => {
-      setSharedUsers(snapshot.docs.map((userDoc) => {
+      setDirectoryUsers(snapshot.docs.map((userDoc) => {
         const profile = userDoc.data();
         return {
           id: userDoc.id,
@@ -175,9 +170,7 @@ function useTrailerData() {
           active: profile.active !== false
         };
       }));
-    }, (error) => {
-      console.error('Unable to load portal users:', error);
-    });
+    }, (error) => console.error('Firestore user directory error:', error));
   }, []);
 
   useEffect(() => {
@@ -186,38 +179,36 @@ function useTrailerData() {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  const saveToFirestore = async (nextData) => {
+    if (!isFirebaseConfigured || !db) return;
+    const ref = doc(db, FIRESTORE_DATA_COLLECTION, FIRESTORE_DATA_DOC);
+    await setDoc(ref, { data: nextData, updatedAt: nowISO() }, { merge: true });
+  };
+
   const update = (fn, message) => {
     // Run validation before React state update so button try/catch can show alerts
     // instead of crashing the whole page.
     const copy = structuredClone(data);
     fn(copy);
     setData(copy);
+    saveToFirestore(copy).catch((error) => {
+      console.error('Firestore save error:', error);
+      setToast('Saved on this screen, but Firestore save failed. Check database rules.');
+    });
     if (message) setToast(message);
   };
 
   const addMovement = (copy, message, actor, trailerId = null, type = 'audit') => {
     const actorId = typeof actor === 'string' ? actor : actor?.id;
-    const savedUser = copy.users.find((u) => u.id === actorId);
+    const savedUser = directoryUsers.find((u) => u.id === actorId) || copy.users?.find((u) => u.id === actorId);
     const isSystem = !actorId || actorId === 'system';
-    const movement = {
-      id: uid('M'),
-      type,
-      message,
-      userId: actorId || 'system',
+    copy.movements = Array.isArray(copy.movements) ? copy.movements : [];
+    copy.movements.unshift({
+      id: uid('M'), type, message, userId: actorId || 'system', trailerId, createdAt: nowISO(),
       actorName: isSystem ? 'System' : actor?.name || savedUser?.name || actor?.email || savedUser?.email || 'Unknown User',
       actorRole: isSystem ? 'system' : actor?.role || savedUser?.role || 'user',
-      actorEmail: isSystem ? '' : actor?.email || savedUser?.email || '',
-      trailerId,
-      createdAt: nowISO()
-    };
-    copy.movements.unshift(movement);
-    if (db) {
-      void setDoc(doc(db, 'activityLogs', movement.id), {
-        ...movement,
-        clientCreatedAt: movement.createdAt,
-        createdAt: serverTimestamp()
-      }).catch((error) => console.error('Unable to save shared activity log:', error));
-    }
+      actorEmail: isSystem ? '' : actor?.email || savedUser?.email || ''
+    });
   };
 
   const addWarehouse = (payload, user) => update((copy) => {
@@ -418,7 +409,7 @@ function useTrailerData() {
     copy.tasks.unshift(task);
     req.status = 'Assigned'; req.approvalType = 'Manual Approved'; req.approvedBy = user.id;
     if (req.trailerId) t.activeTaskId = task.id;
-    const assignedShunter = sharedUsers.find((u) => u.id === shunterId) || copy.users.find((u) => u.id === shunterId);
+    const assignedShunter = directoryUsers.find((u) => u.id === shunterId) || copy.users?.find((u) => u.id === shunterId);
     addMovement(copy, `${req.id} approved and assigned to ${assignedShunter?.name || 'a shunter'}.`, user, req.trailerId, 'task');
   }, 'Request approved and assigned.');
 
@@ -477,14 +468,13 @@ function useTrailerData() {
   const resetDemo = () => {
     const seed = createSeed();
     setData(seed);
-    setToast('Demo data reset.');
+    saveToFirestore(seed).catch((error) => console.error('Firestore reset error:', error));
+    setToast('Portal data reset.');
   };
 
-  const visibleMovements = (sharedMovements.length ? sharedMovements : data.movements)
-    .filter((movement) => !String(movement.message || '').includes('John Shunter'));
-  const visibleUsers = sharedUsers.length ? sharedUsers : data.users.filter((portalUser) => portalUser.id !== 'u-shunter');
-  const visibleData = { ...data, movements: visibleMovements, users: visibleUsers };
-  return { data: visibleData, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
+  const visibleUsers = directoryUsers.length ? directoryUsers : (data.users || []).filter((portalUser) => portalUser.id !== 'u-shunter');
+  const visibleData = { ...data, users: visibleUsers };
+  return { data: visibleData, dataReady, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
 }
 
 function iconForStatus(status) {
@@ -610,8 +600,8 @@ export default function TrailerFlowApp() {
     setPage('dashboard');
   };
 
-  if (!authReady) {
-    return <div className="landing"><div className="login-panel"><h2 className="panel-title">Loading HPW-RNF Portal...</h2><p className="panel-copy">Checking secure login.</p></div></div>;
+  if (!authReady || !store.dataReady) {
+    return <div className="landing"><div className="login-panel"><h2 className="panel-title">Loading HPW-RNF Portal...</h2><p className="panel-copy">Checking secure login and Firestore data.</p></div></div>;
   }
 
   if (!user) {
@@ -920,7 +910,7 @@ function YardMap({ data, companyId = null }) {
 
 function ActivityList({ data }) {
   return <div className="activity-list">
-    {data.movements.slice(0, 12).map((m) => {
+    {(data.movements || []).filter((m) => !String(m.message || '').includes('John Shunter')).slice(0, 12).map((m) => {
       const savedUser = data.users.find((u) => u.id === m.userId);
       const actorName = m.actorName || savedUser?.name || (m.userId === 'system' ? 'System' : 'Unknown User');
       const actorRole = m.actorRole || savedUser?.role || (m.userId === 'system' ? 'system' : 'user');
@@ -928,11 +918,8 @@ function ActivityList({ data }) {
       const icon = m.type === 'task' ? '✅' : m.type === 'request' ? '📦' : m.type === 'user' ? '👤' : '↔️';
       return <div className="activity" key={m.id}>
         <div className="activity-icon">{icon}</div>
-        <div>
-          <strong>{m.message}</strong>
-          <span>By {actorName} • {roleLabel(actorRole)}{trailerNumber ? ` • ${trailerNumber}` : ''}</span>
-        </div>
-        <small title={new Date(m.createdAt).toISOString()}>{dateTime(m.createdAt)}</small>
+        <div><strong>{m.message}</strong><span>By {actorName} • {roleLabel(actorRole)}{trailerNumber ? ` • ${trailerNumber}` : ''}</span></div>
+        <small title={m.createdAt}>{dateTime(m.createdAt)}</small>
       </div>;
     })}
   </div>;
