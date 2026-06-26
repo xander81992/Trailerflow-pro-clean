@@ -1,19 +1,11 @@
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
-import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { collection, doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
-import { auth, db, isFirebaseConfigured } from '../lib/firebase';
 
-const FIRESTORE_DATA_COLLECTION = 'portalData';
-const FIRESTORE_DATA_DOC = 'main';
+const STORE_KEY = 'trailerflow-pro-clean-v1';
 const nowISO = () => new Date().toISOString();
 const timeOnly = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const dateOnly = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-const dateTime = (iso) => new Date(iso).toLocaleString('en-CA', {
-  month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
-  timeZone: 'America/Toronto', timeZoneName: 'short'
-});
 const uid = (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 
 const taskSteps = ['Assigned', 'Started', 'Arrived', 'Picked Up', 'Dropped', 'Completed'];
@@ -59,24 +51,27 @@ function createSeed() {
     }
   });
 
-  const trailerNumbers = ['1209', '1206', '1185', 'L1182', 'L1178', '1204', '1195', '1205', 'L1177', '1220', '1221', 'L1181', '1207', '1210', '1161', '1157'];
-  const trailers = trailerNumbers.map((number, index) => ({
-    id: `t-${String(index + 1).padStart(3, '0')}`,
-    number,
-    plate: '',
-    companyId: 'rnf',
-    status: index % 6 === 0 ? 'Empty' : index % 7 === 0 ? 'In Transit' : 'Loaded',
-    warehouseId: null,
-    doorId: null,
-    activeTaskId: null,
-    notes: '',
-    lastMovedAt: nowISO()
-  }));
+  const trailers = [];
+  for (let i = 1; i <= 30; i++) {
+    trailers.push({
+      id: `t-${String(i).padStart(3, '0')}`,
+      number: `TR-${String(i).padStart(3, '0')}`,
+      plate: `RNF-${1000 + i}`,
+      companyId: 'rnf',
+      status: i % 6 === 0 ? 'Empty' : i % 7 === 0 ? 'In Transit' : 'Loaded',
+      warehouseId: null,
+      doorId: null,
+      activeTaskId: null,
+      notes: '',
+      lastMovedAt: nowISO()
+    });
+  }
 
   const assignPairs = [
     ['t-001', 'd-a-1'], ['t-002', 'd-a-3'], ['t-003', 'd-a-5'], ['t-004', 'd-b-2'], ['t-005', 'd-b-4'],
     ['t-008', 'd-c-1'], ['t-009', 'd-c-3'], ['t-010', 'd-d-1'], ['t-011', 'd-e-2'], ['t-012', 'd-f-1'],
-    ['t-013', 'd-f-3'], ['t-014', 'd-e-5'], ['t-015', 'd-c-5'], ['t-016', 'd-a-7']
+    ['t-013', 'd-f-3'], ['t-014', 'd-e-5'], ['t-015', 'd-c-5'], ['t-016', 'd-a-7'], ['t-017', 'd-b-6'],
+    ['t-018', 'd-d-3'], ['t-019', 'd-e-7'], ['t-020', 'd-f-5']
   ];
   assignPairs.forEach(([trailerId, doorId]) => {
     const door = doors.find((d) => d.id === doorId);
@@ -125,53 +120,23 @@ function createSeed() {
   return { companies, users, warehouses, doors, trailers, requests, tasks, movements, invitations: [] };
 }
 
+function getInitialData() {
+  if (typeof window === 'undefined') return createSeed();
+  try {
+    const stored = localStorage.getItem(STORE_KEY);
+    return stored ? JSON.parse(stored) : createSeed();
+  } catch {
+    return createSeed();
+  }
+}
+
 function useTrailerData() {
-  const [data, setData] = useState(createSeed);
-  const [directoryUsers, setDirectoryUsers] = useState([]);
+  const [data, setData] = useState(getInitialData);
   const [toast, setToast] = useState('');
-  const [dataReady, setDataReady] = useState(false);
 
   useEffect(() => {
-    if (!isFirebaseConfigured || !db) {
-      setDataReady(true);
-      return;
-    }
-
-    const ref = doc(db, FIRESTORE_DATA_COLLECTION, FIRESTORE_DATA_DOC);
-
-    const unsub = onSnapshot(ref, async (snap) => {
-      if (snap.exists()) {
-        const cloud = snap.data();
-        setData(cloud.data || cloud);
-      } else {
-        const seed = createSeed();
-        await setDoc(ref, { data: seed, updatedAt: nowISO(), createdAt: nowISO() });
-        setData(seed);
-      }
-      setDataReady(true);
-    }, (error) => {
-      console.error('Firestore data load error:', error);
-      setToast('Could not load Firestore data. Check Firestore rules.');
-      setDataReady(true);
-    });
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    if (!isFirebaseConfigured || !db) return undefined;
-    return onSnapshot(collection(db, 'users'), (snapshot) => {
-      setDirectoryUsers(snapshot.docs.map((userDoc) => {
-        const profile = userDoc.data();
-        return {
-          id: userDoc.id,
-          ...profile,
-          companyId: profile.companyId || (String(profile.company || '').toLowerCase().includes('rnf') ? 'rnf' : 'hopewell'),
-          active: profile.active !== false
-        };
-      }));
-    }, (error) => console.error('Firestore user directory error:', error));
-  }, []);
+    localStorage.setItem(STORE_KEY, JSON.stringify(data));
+  }, [data]);
 
   useEffect(() => {
     if (!toast) return;
@@ -179,36 +144,17 @@ function useTrailerData() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const saveToFirestore = async (nextData) => {
-    if (!isFirebaseConfigured || !db) return;
-    const ref = doc(db, FIRESTORE_DATA_COLLECTION, FIRESTORE_DATA_DOC);
-    await setDoc(ref, { data: nextData, updatedAt: nowISO() }, { merge: true });
-  };
-
   const update = (fn, message) => {
     // Run validation before React state update so button try/catch can show alerts
     // instead of crashing the whole page.
     const copy = structuredClone(data);
     fn(copy);
     setData(copy);
-    saveToFirestore(copy).catch((error) => {
-      console.error('Firestore save error:', error);
-      setToast('Saved on this screen, but Firestore save failed. Check database rules.');
-    });
     if (message) setToast(message);
   };
 
-  const addMovement = (copy, message, actor, trailerId = null, type = 'audit') => {
-    const actorId = typeof actor === 'string' ? actor : actor?.id;
-    const savedUser = directoryUsers.find((u) => u.id === actorId) || copy.users?.find((u) => u.id === actorId);
-    const isSystem = !actorId || actorId === 'system';
-    copy.movements = Array.isArray(copy.movements) ? copy.movements : [];
-    copy.movements.unshift({
-      id: uid('M'), type, message, userId: actorId || 'system', trailerId, createdAt: nowISO(),
-      actorName: isSystem ? 'System' : actor?.name || savedUser?.name || actor?.email || savedUser?.email || 'Unknown User',
-      actorRole: isSystem ? 'system' : actor?.role || savedUser?.role || 'user',
-      actorEmail: isSystem ? '' : actor?.email || savedUser?.email || ''
-    });
+  const addMovement = (copy, message, userId, trailerId = null, type = 'audit') => {
+    copy.movements.unshift({ id: uid('M'), type, message, userId, trailerId, createdAt: nowISO() });
   };
 
   const addWarehouse = (payload, user) => update((copy) => {
@@ -220,14 +166,14 @@ function useTrailerData() {
     for (let i = 1; i <= Number(payload.doors || 0); i++) {
       copy.doors.push({ id: uid('D'), warehouseId: warehouse.id, code: `${code}${i}`, status: 'Empty', trailerId: null, updatedAt: nowISO() });
     }
-    addMovement(copy, `${warehouse.name} created with ${payload.doors || 0} doors.`, user);
+    addMovement(copy, `${warehouse.name} created with ${payload.doors || 0} doors.`, user.id);
   }, 'Warehouse created.');
 
   const addDoor = (warehouseId, code, user) => update((copy) => {
     if (!code.trim()) throw new Error('Door code required.');
     if (copy.doors.some((d) => d.warehouseId === warehouseId && d.code.toLowerCase() === code.trim().toLowerCase())) throw new Error('Door already exists in this warehouse.');
     copy.doors.push({ id: uid('D'), warehouseId, code: code.trim().toUpperCase(), status: 'Empty', trailerId: null, updatedAt: nowISO() });
-    addMovement(copy, `Door ${code.toUpperCase()} created.`, user);
+    addMovement(copy, `Door ${code.toUpperCase()} created.`, user.id);
   }, 'Door created.');
 
   const addTrailer = (payload, user) => update((copy) => {
@@ -243,7 +189,7 @@ function useTrailerData() {
     };
     copy.trailers.push(trailer);
     if (door) { door.trailerId = trailer.id; door.status = 'Occupied'; door.updatedAt = nowISO(); }
-    addMovement(copy, `Trailer ${number} created.`, user, trailer.id);
+    addMovement(copy, `Trailer ${number} created.`, user.id, trailer.id);
   }, 'Trailer created.');
 
 
@@ -258,7 +204,7 @@ function useTrailerData() {
     warehouse.code = code;
     warehouse.address = payload.address.trim();
     warehouse.active = payload.active ?? true;
-    addMovement(copy, `${oldName} updated to ${warehouse.name}.`, user, null, 'audit');
+    addMovement(copy, `${oldName} updated to ${warehouse.name}.`, user.id, null, 'audit');
   }, 'Warehouse updated.');
 
   const deleteWarehouse = (warehouseId, user) => update((copy) => {
@@ -269,7 +215,7 @@ function useTrailerData() {
     if (copy.tasks.some((t) => t.status !== 'Completed' && (t.sourceWarehouseId === warehouseId || t.destinationWarehouseId === warehouseId))) throw new Error('Cannot delete this warehouse because it has active shunter tasks.');
     copy.doors = copy.doors.filter((d) => d.warehouseId !== warehouseId);
     copy.warehouses = copy.warehouses.filter((w) => w.id !== warehouseId);
-    addMovement(copy, `${warehouse.name} deleted with ${warehouseDoors.length} empty doors.`, user, null, 'audit');
+    addMovement(copy, `${warehouse.name} deleted with ${warehouseDoors.length} empty doors.`, user.id, null, 'audit');
   }, 'Warehouse deleted.');
 
   const updateDoor = (doorId, payload, user) => update((copy) => {
@@ -285,7 +231,7 @@ function useTrailerData() {
     door.updatedAt = nowISO();
     const trailer = door.trailerId ? copy.trailers.find((t) => t.id === door.trailerId) : null;
     if (trailer) trailer.warehouseId = payload.warehouseId;
-    addMovement(copy, `Door ${code} updated.`, user, trailer?.id || null, 'audit');
+    addMovement(copy, `Door ${code} updated.`, user.id, trailer?.id || null, 'audit');
   }, 'Door updated.');
 
   const deleteDoor = (doorId, user) => update((copy) => {
@@ -294,17 +240,12 @@ function useTrailerData() {
     if (door.trailerId) throw new Error('Cannot delete this door because it currently has a trailer. Move the trailer first.');
     if (copy.tasks.some((t) => t.status !== 'Completed' && (t.sourceDoorId === doorId || t.destinationDoorId === doorId))) throw new Error('Cannot delete this door because it is used by an active task.');
     copy.doors = copy.doors.filter((d) => d.id !== doorId);
-    addMovement(copy, `Door ${door.code} deleted.`, user, null, 'audit');
+    addMovement(copy, `Door ${door.code} deleted.`, user.id, null, 'audit');
   }, 'Door deleted.');
 
   const updateTrailer = (trailerId, payload, user) => update((copy) => {
     const trailer = copy.trailers.find((t) => t.id === trailerId);
     if (!trailer) throw new Error('Trailer not found.');
-    const previousWarehouse = copy.warehouses.find((w) => w.id === trailer.warehouseId);
-    const previousDoor = copy.doors.find((d) => d.id === trailer.doorId);
-    const previousLocation = `${previousWarehouse?.name || 'In Transit'}${previousDoor ? ` • Door ${previousDoor.code}` : ''}`;
-    const previousWarehouseId = trailer.warehouseId;
-    const previousDoorId = trailer.doorId;
     const number = payload.number.trim().toUpperCase();
     if (!number) throw new Error('Trailer number is required.');
     if (copy.trailers.some((t) => t.id !== trailerId && t.number === number)) throw new Error('Trailer number already exists.');
@@ -324,10 +265,7 @@ function useTrailerData() {
     trailer.notes = payload.notes || '';
     trailer.lastMovedAt = nowISO();
     if (nextDoor) { nextDoor.trailerId = trailer.id; nextDoor.status = 'Occupied'; nextDoor.updatedAt = nowISO(); }
-    const nextWarehouse = copy.warehouses.find((w) => w.id === trailer.warehouseId);
-    const nextLocation = `${nextWarehouse?.name || 'In Transit'}${nextDoor ? ` • Door ${nextDoor.code}` : ''}`;
-    const locationChanged = previousWarehouseId !== trailer.warehouseId || previousDoorId !== trailer.doorId;
-    addMovement(copy, locationChanged ? `Moved trailer ${number} from ${previousLocation} to ${nextLocation}.` : `Trailer ${number} details updated.`, user, trailer.id, locationChanged ? 'movement' : 'audit');
+    addMovement(copy, `Trailer ${number} updated.`, user.id, trailer.id, 'audit');
   }, 'Trailer updated.');
 
   const deleteTrailer = (trailerId, user) => update((copy) => {
@@ -339,7 +277,7 @@ function useTrailerData() {
       if (door) { door.trailerId = null; door.status = 'Empty'; door.updatedAt = nowISO(); }
     }
     copy.trailers = copy.trailers.filter((t) => t.id !== trailerId);
-    addMovement(copy, `Trailer ${trailer.number} deleted.`, user, trailer.id, 'audit');
+    addMovement(copy, `Trailer ${trailer.number} deleted.`, user.id, trailer.id, 'audit');
   }, 'Trailer deleted.');
 
   const createRequest = (payload, user) => update((copy) => {
@@ -369,7 +307,7 @@ function useTrailerData() {
       notes: payload.notes || ''
     };
     copy.requests.unshift(request);
-    addMovement(copy, `${company?.name || 'Requestor'} submitted ${request.id}. ${company?.autoApprove ? 'Auto approved.' : 'Waiting for admin approval.'}`, user, request.trailerId, 'request');
+    addMovement(copy, `${company?.name || 'Requestor'} submitted ${request.id}. ${company?.autoApprove ? 'Auto approved.' : 'Waiting for admin approval.'}`, user.id, request.trailerId, 'request');
 
     if (company?.autoApprove) {
       let trailerId = request.trailerId;
@@ -380,7 +318,7 @@ function useTrailerData() {
       const sourceDoorId = trailerId ? copy.trailers.find((t) => t.id === trailerId)?.doorId || null : null;
       const sourceWarehouseId = request.sourceWarehouseId || (trailerId ? copy.trailers.find((t) => t.id === trailerId)?.warehouseId : null);
       const task = {
-        id: uid('TASK'), requestId: request.id, type: request.type, companyId: request.companyId, assignedTo: null, status: 'Assigned',
+        id: uid('TASK'), requestId: request.id, type: request.type, companyId: request.companyId, assignedTo: 'u-shunter', status: 'Assigned',
         trailerId, sourceWarehouseId, sourceDoorId, destinationWarehouseId: request.destinationWarehouseId, destinationDoorId: null,
         po: request.po, pallets: request.pallets, notes: request.notes, dueTime: request.appointment || 'Today', createdAt: nowISO(), timestamps: { Assigned: nowISO() }
       };
@@ -409,8 +347,7 @@ function useTrailerData() {
     copy.tasks.unshift(task);
     req.status = 'Assigned'; req.approvalType = 'Manual Approved'; req.approvedBy = user.id;
     if (req.trailerId) t.activeTaskId = task.id;
-    const assignedShunter = directoryUsers.find((u) => u.id === shunterId) || copy.users?.find((u) => u.id === shunterId);
-    addMovement(copy, `${req.id} approved and assigned to ${assignedShunter?.name || 'a shunter'}.`, user, req.trailerId, 'task');
+    addMovement(copy, `${req.id} approved and assigned to shunter.`, user.id, req.trailerId, 'task');
   }, 'Request approved and assigned.');
 
   const updateTaskStatus = (taskId, nextStatus, destinationDoorId, user) => update((copy) => {
@@ -418,10 +355,6 @@ function useTrailerData() {
     if (!task) throw new Error('Task not found.');
     const request = copy.requests.find((r) => r.id === task.requestId);
     const trailer = task.trailerId ? copy.trailers.find((t) => t.id === task.trailerId) : null;
-    const sourceWarehouse = copy.warehouses.find((w) => w.id === task.sourceWarehouseId);
-    const sourceDoor = copy.doors.find((d) => d.id === task.sourceDoorId);
-    let destinationWarehouse = null;
-    let destinationDoor = null;
     if (nextStatus === 'Picked Up' && trailer) {
       if (trailer.doorId) {
         const sourceDoor = copy.doors.find((d) => d.id === trailer.doorId);
@@ -438,43 +371,28 @@ function useTrailerData() {
         trailer.warehouseId = door.warehouseId; trailer.doorId = door.id; trailer.status = task.type === 'empty' ? 'Empty' : 'Loaded'; trailer.lastMovedAt = nowISO();
       }
       task.destinationDoorId = destinationDoorId;
-      destinationDoor = door;
-      destinationWarehouse = copy.warehouses.find((w) => w.id === door.warehouseId);
     }
     task.status = nextStatus;
     task.timestamps = task.timestamps || {};
     task.timestamps[nextStatus] = nowISO();
-    task.statusActors = task.statusActors || {};
-    task.statusActors[nextStatus] = { id: user.id, name: user.name, role: user.role, email: user.email || '' };
     if (request) request.status = nextStatus === 'Completed' ? 'Completed' : task.status;
     if (nextStatus === 'Completed' && trailer) trailer.activeTaskId = null;
-    let movementMessage = `${task.id} marked ${nextStatus}.`;
-    if (nextStatus === 'Picked Up' && trailer) {
-      movementMessage = `Picked up trailer ${trailer.number} from ${sourceWarehouse?.name || 'Yard'}${sourceDoor ? ` • Door ${sourceDoor.code}` : ''} for ${task.id}.`;
-    } else if (nextStatus === 'Dropped' && trailer) {
-      movementMessage = `Dropped trailer ${trailer.number} at ${destinationWarehouse?.name || 'destination'}${destinationDoor ? ` • Door ${destinationDoor.code}` : ''} for ${task.id}.`;
-    } else if (nextStatus === 'Completed' && trailer) {
-      movementMessage = `Completed ${task.id} for trailer ${trailer.number}.`;
-    }
-    addMovement(copy, movementMessage, user, trailer?.id || null, 'movement');
+    addMovement(copy, `${task.id} marked ${nextStatus}.`, user.id, trailer?.id || null, 'movement');
   }, `Task marked ${nextStatus}.`);
 
   const createInvite = (email, role, companyId, user) => update((copy) => {
     const token = Math.random().toString(36).slice(2, 12);
     copy.invitations.unshift({ id: uid('INV'), email, role, companyId, token, status: 'Pending', createdBy: user.id, createdAt: nowISO() });
-    addMovement(copy, `Invitation created for ${email}.`, user, null, 'user');
+    addMovement(copy, `Invitation created for ${email}.`, user.id, null, 'user');
   }, 'Invitation link created.');
 
   const resetDemo = () => {
     const seed = createSeed();
     setData(seed);
-    saveToFirestore(seed).catch((error) => console.error('Firestore reset error:', error));
-    setToast('Portal data reset.');
+    setToast('Demo data reset.');
   };
 
-  const visibleUsers = directoryUsers.length ? directoryUsers : (data.users || []).filter((portalUser) => portalUser.id !== 'u-shunter');
-  const visibleData = { ...data, users: visibleUsers };
-  return { data: visibleData, dataReady, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
+  return { data, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
 }
 
 function iconForStatus(status) {
@@ -488,11 +406,7 @@ function iconForStatus(status) {
 }
 
 function roleLabel(role) {
-  if (role === 'rnf') return 'RNF User';
-  if (role === 'admin') return 'Admin';
-  if (role === 'shunter') return 'Shunter';
-  if (role === 'system') return 'System';
-  return 'User';
+  return role === 'rnf' ? 'RNF User' : role === 'admin' ? 'Admin' : 'Shunter';
 }
 
 export default function TrailerFlowApp() {
@@ -500,130 +414,14 @@ export default function TrailerFlowApp() {
   const [user, setUser] = useState(null);
   const [page, setPage] = useState('dashboard');
   const [search, setSearch] = useState('');
-  const [authReady, setAuthReady] = useState(false);
-  const [loginRole, setLoginRole] = useState(null);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [authError, setAuthError] = useState('');
-  const [authBusy, setAuthBusy] = useState(false);
 
-  const companyToId = (company) => {
-    const value = String(company || '').toLowerCase();
-    if (value.includes('rnf')) return 'rnf';
-    return 'hopewell';
-  };
-
-  const getPortalUser = async (firebaseUser) => {
-    if (!db) throw new Error('Firebase database is not configured. Check Vercel environment variables.');
-    const snap = await getDoc(doc(db, 'users', firebaseUser.uid));
-    if (!snap.exists()) throw new Error('No portal role was found for this account. Check Firestore users/{UID}.');
-
-    const profile = snap.data();
-    if (profile.active === false) throw new Error('This account is disabled. Contact the admin.');
-
-    return {
-      id: firebaseUser.uid,
-      name: profile.name || firebaseUser.email || 'Portal User',
-      email: profile.email || firebaseUser.email || '',
-      role: profile.role || 'rnf',
-      companyId: profile.companyId || companyToId(profile.company),
-      active: profile.active !== false
-    };
-  };
-
-  useEffect(() => {
-    const forceLoginScreen = async () => {
-      try {
-        if (auth?.currentUser) {
-          await signOut(auth);
-        }
-      } catch (error) {
-        console.warn('Firebase sign out warning:', error);
-      } finally {
-        setUser(null);
-        setLoginRole(null);
-        setAuthReady(true);
-      }
-    };
-
-    forceLoginScreen();
-  }, []);
-
-  const openLogin = (role) => {
-    setLoginRole(role);
-    setEmail(role === 'admin' ? 'admin@test.com' : role === 'rnf' ? 'rnf@test.com' : 'shunter@test.com');
-    setPassword('');
-    setAuthError('');
-  };
-
-  const handleLogin = async (event) => {
-    event.preventDefault();
-    setAuthError('');
-
-    if (!isFirebaseConfigured || !auth || !db) {
-      setAuthError('Firebase is not connected yet. Check Vercel environment variables and redeploy.');
-      return;
-    }
-
-    if (!email.trim() || !password.trim()) {
-      setAuthError('Enter both email and password.');
-      return;
-    }
-
-    try {
-      setAuthBusy(true);
-      const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
-      const portalUser = await getPortalUser(credential.user);
-
-      if (loginRole && portalUser.role !== loginRole) {
-        await signOut(auth);
-        setUser(null);
-        setAuthError(`This login is for ${roleLabel(portalUser.role)}, not ${roleLabel(loginRole)}.`);
-        return;
-      }
-
-      setUser(portalUser);
-      setPage('dashboard');
-      setLoginRole(null);
-      setPassword('');
-    } catch (error) {
-      console.error(error);
-      setAuthError(cleanAuthError(error));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    if (auth?.currentUser) await signOut(auth);
-    setUser(null);
+  const loginAs = (role) => {
+    const nextUser = store.data.users.find((u) => u.role === role);
+    setUser(nextUser);
     setPage('dashboard');
   };
 
-  if (!authReady || !store.dataReady) {
-    return <div className="landing"><div className="login-panel"><h2 className="panel-title">Loading HPW-RNF Portal...</h2><p className="panel-copy">Checking secure login and Firestore data.</p></div></div>;
-  }
-
-  if (!user) {
-    return (
-      <>
-        <Landing data={store.data} openLogin={openLogin} />
-        {loginRole ? (
-          <LoginModal
-            role={loginRole}
-            email={email}
-            setEmail={setEmail}
-            password={password}
-            setPassword={setPassword}
-            error={authError}
-            busy={authBusy}
-            onClose={() => setLoginRole(null)}
-            onSubmit={handleLogin}
-          />
-        ) : null}
-      </>
-    );
-  }
+  if (!user) return <Landing data={store.data} loginAs={loginAs} />;
 
   const nav = getNav(user.role);
   const currentPage = nav.some((n) => n.id === page) ? page : 'dashboard';
@@ -651,7 +449,8 @@ export default function TrailerFlowApp() {
           ))}
         </div>
         <div className="sidebar-footer">
-          <button className="btn btn-danger" onClick={handleLogout}>Logout</button>
+          <button className="btn btn-ghost" onClick={() => store.resetDemo()}>Reset Demo Data</button>
+          <button className="btn btn-danger" onClick={() => setUser(null)}>Logout</button>
         </div>
       </aside>
       <main className="main">
@@ -662,7 +461,7 @@ export default function TrailerFlowApp() {
           </div>
           <div className="topbar-tools">
             <input className="search" placeholder="Search trailers, PO, warehouse..." value={search} onChange={(e) => setSearch(e.target.value)} />
-            <span className="badge green">Online</span>
+            <span className="badge green">Live Demo</span>
           </div>
         </div>
         <PageRouter user={user} page={currentPage} search={search} store={store} />
@@ -672,7 +471,7 @@ export default function TrailerFlowApp() {
   );
 }
 
-function Landing({ data, openLogin }) {
+function Landing({ data, loginAs }) {
   const stats = useMemo(() => ({
     trailers: data.trailers.length,
     whses: data.warehouses.length,
@@ -690,9 +489,9 @@ function Landing({ data, openLogin }) {
           </div>
         </div>
         <div className="nav-actions">
-          <button className="btn btn-soft" onClick={() => openLogin('admin')}>Admin Login</button>
-          <button className="btn btn-green" onClick={() => openLogin('rnf')}>RNF Login</button>
-          <button className="btn btn-purple" onClick={() => openLogin('shunter')}>Shunter Login</button>
+          <button className="btn btn-soft" onClick={() => loginAs('admin')}>Admin Demo</button>
+          <button className="btn btn-green" onClick={() => loginAs('rnf')}>RNF Login</button>
+          <button className="btn btn-purple" onClick={() => loginAs('shunter')}>Shunter Login</button>
         </div>
       </nav>
       <section className="hero">
@@ -701,8 +500,8 @@ function Landing({ data, openLogin }) {
           <h1>Modern yard visibility for intercompany trailer moves.</h1>
           <p>Book pickups, request empty trailers, assign shunter tasks, prevent double-booked doors, and give RNF live visibility of trailer locations from one clean portal.</p>
           <div className="hero-actions">
-            <button className="btn btn-primary" onClick={() => openLogin('admin')}>Admin Login</button>
-            <button className="btn btn-ghost" onClick={() => openLogin('rnf')}>RNF Login</button>
+            <button className="btn btn-primary" onClick={() => loginAs('admin')}>Open Admin Control Center</button>
+            <button className="btn btn-ghost" onClick={() => loginAs('rnf')}>View RNF Dashboard</button>
           </div>
           <div className="hero-metrics">
             <div className="hero-metric"><strong>{stats.trailers}</strong><span>Trailers</span></div>
@@ -715,13 +514,13 @@ function Landing({ data, openLogin }) {
           <h2 className="panel-title">Choose your portal</h2>
           <p className="panel-copy">This clean build is ready for GitHub and Vercel. It includes the modern role-based workflow we discussed.</p>
           <div className="role-grid">
-            <button className="role-card" onClick={() => openLogin('admin')}>
+            <button className="role-card" onClick={() => loginAs('admin')}>
               <span className="role-icon admin">👑</span><span><strong>Hopewell Admin</strong><span>Control center, WHSE setup, doors, trailers, assignments, reports.</span></span>
             </button>
-            <button className="role-card" onClick={() => openLogin('rnf')}>
+            <button className="role-card" onClick={() => loginAs('rnf')}>
               <span className="role-icon rnf">🏢</span><span><strong>RNF User</strong><span>Book pickups, request empties, and view RNF trailer locations.</span></span>
             </button>
-            <button className="role-card" onClick={() => openLogin('shunter')}>
+            <button className="role-card" onClick={() => loginAs('shunter')}>
               <span className="role-icon shunter">🚛</span><span><strong>Shunter</strong><span>Assigned tasks only. Start, arrive, pickup, drop, complete.</span></span>
             </button>
           </div>
@@ -734,40 +533,6 @@ function Landing({ data, openLogin }) {
         <div className="feature"><strong>Mobile shunter flow</strong><p>No charts. Just assigned work with large action buttons.</p></div>
         <div className="feature"><strong>Reports ready</strong><p>Export daily, weekly, monthly operations reports.</p></div>
       </section>
-    </div>
-  );
-}
-
-
-function cleanAuthError(error) {
-  const message = String(error?.message || error || 'Login failed.');
-  if (message.includes('auth/invalid-credential') || message.includes('auth/wrong-password') || message.includes('auth/user-not-found')) return 'Invalid email or password.';
-  if (message.includes('auth/too-many-requests')) return 'Too many login attempts. Try again later.';
-  if (message.includes('auth/network-request-failed')) return 'Network error. Check your connection.';
-  return message.replace('Firebase: ', '').replace(/\s*\(auth\/.+?\)\.?$/, '.');
-}
-
-function LoginModal({ role, email, setEmail, password, setPassword, error, busy, onClose, onSubmit }) {
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'grid', placeItems: 'center', background: 'rgba(15, 23, 42, 0.58)', padding: 20 }}>
-      <form onSubmit={onSubmit} className="card" style={{ width: 'min(460px, 100%)', boxShadow: '0 24px 70px rgba(15, 23, 42, 0.30)' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-          <div>
-            <h2>{roleLabel(role)} Login</h2>
-            <p className="card-sub">Enter your Firebase email and password to access the portal.</p>
-          </div>
-          <button type="button" className="btn btn-soft btn-small" onClick={onClose}>✕</button>
-        </div>
-        <div className="form-grid one">
-          <Field label="Email"><input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@test.com" autoComplete="email" /></Field>
-          <Field label="Password"><input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" type="password" autoComplete="current-password" /></Field>
-        </div>
-        {error ? <div className="notice red">{error}</div> : null}
-        <div className="form-actions">
-          <button type="button" className="btn btn-soft" onClick={onClose}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Signing in...' : 'Sign In'}</button>
-        </div>
-      </form>
     </div>
   );
 }
@@ -910,18 +675,11 @@ function YardMap({ data, companyId = null }) {
 
 function ActivityList({ data }) {
   return <div className="activity-list">
-    {(data.movements || []).filter((m) => !String(m.message || '').includes('John Shunter')).slice(0, 12).map((m) => {
-      const savedUser = data.users.find((u) => u.id === m.userId);
-      const actorName = m.actorName || savedUser?.name || (m.userId === 'system' ? 'System' : 'Unknown User');
-      const actorRole = m.actorRole || savedUser?.role || (m.userId === 'system' ? 'system' : 'user');
-      const trailerNumber = m.trailerId ? data.trailers.find((t) => t.id === m.trailerId)?.number : null;
-      const icon = m.type === 'task' ? '✅' : m.type === 'request' ? '📦' : m.type === 'user' ? '👤' : '↔️';
-      return <div className="activity" key={m.id}>
-        <div className="activity-icon">{icon}</div>
-        <div><strong>{m.message}</strong><span>By {actorName} • {roleLabel(actorRole)}{trailerNumber ? ` • ${trailerNumber}` : ''}</span></div>
-        <small title={m.createdAt}>{dateTime(m.createdAt)}</small>
-      </div>;
-    })}
+    {data.movements.slice(0, 8).map((m) => <div className="activity" key={m.id}>
+      <div className="activity-icon">{m.type === 'task' ? '✅' : m.type === 'request' ? '📦' : '↔️'}</div>
+      <div><strong>{m.message}</strong><span>{m.trailerId ? data.trailers.find((t) => t.id === m.trailerId)?.number : 'System activity'}</span></div>
+      <small>{timeOnly(m.createdAt)}</small>
+    </div>)}
   </div>;
 }
 
@@ -1126,14 +884,8 @@ function AdminRequests({ user, store }) {
 function ShunterTasks({ user, store, completedOnly = false, search = '' }) {
   const data = store.data;
   const [dropDoor, setDropDoor] = useState({});
-  // Show all active tasks to shunter, so tasks are not hidden by Firebase UID vs demo ID.
-  const tasks = data.tasks.filter((t) =>
-    (completedOnly ? t.status === 'Completed' : t.status !== 'Completed') &&
-    `${t.id} ${t.po || ''} ${data.trailers.find((x) => x.id === t.trailerId)?.number || ''}`
-      .toLowerCase()
-      .includes(search.toLowerCase())
-  );
-  if (!tasks.length) return <div className="empty-state">No {completedOnly ? 'completed' : 'active'} tasks found.<br />Create a request from RNF or assign a request from Admin.</div>;
+  const tasks = data.tasks.filter((t) => t.assignedTo === user.id && (completedOnly ? t.status === 'Completed' : t.status !== 'Completed') && `${t.id} ${t.po} ${data.trailers.find((x) => x.id === t.trailerId)?.number || ''}`.toLowerCase().includes(search.toLowerCase()));
+  if (!tasks.length) return <div className="empty-state">No {completedOnly ? 'completed' : 'active'} tasks found.</div>;
   return <div className="task-list">{tasks.map((task) => {
     const trailer = data.trailers.find((t) => t.id === task.trailerId);
     const availableDoors = data.doors.filter((d) => !d.trailerId && d.warehouseId === task.destinationWarehouseId && d.status !== 'Maintenance');
@@ -1164,10 +916,7 @@ function Progress({ current }) {
 
 function Timeline({ task }) {
   const entries = Object.entries(task.timestamps || {});
-  return <div className="timeline" style={{ marginTop: 16 }}>{entries.map(([status, iso]) => {
-    const actor = task.statusActors?.[status];
-    return <div className="timeline-item" key={status}><div className="timeline-dot" /><div className="timeline-content"><strong>{status}</strong><span>{actor?.name ? `${actor.name} • ${roleLabel(actor.role)} • ` : ''}{dateTime(iso)}</span></div></div>;
-  })}</div>;
+  return <div className="timeline" style={{ marginTop: 16 }}>{entries.map(([status, iso]) => <div className="timeline-item" key={status}><div className="timeline-dot" /><div className="timeline-content"><strong>{status}</strong><span>{dateOnly(iso)} • {timeOnly(iso)}</span></div></div>)}</div>;
 }
 
 function AdminTasks({ user, store, search }) {
