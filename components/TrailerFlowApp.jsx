@@ -27,7 +27,6 @@ function createSeed() {
   const users = [
     { id: 'u-admin', name: 'Alexander Admin', email: 'admin@hopewell.local', role: 'admin', companyId: 'hopewell', active: true },
     { id: 'u-rnf', name: 'RNF Requestor', email: 'rnf@rnf.local', role: 'rnf', companyId: 'rnf', active: true },
-    { id: 'u-shunter', name: 'John Shunter', email: 'shunter@hopewell.local', role: 'shunter', companyId: 'hopewell', active: true }
   ];
 
   const whseTemplates = [
@@ -106,12 +105,12 @@ function createSeed() {
 
   const tasks = [
     {
-      id: 'TASK-1001', requestId: 'PK-2026-000001', type: 'pickup', companyId: 'rnf', assignedTo: 'u-shunter', status: 'Assigned',
+      id: 'TASK-1001', requestId: 'PK-2026-000001', type: 'pickup', companyId: 'rnf', assignedTo: null, status: 'Assigned',
       trailerId: 't-001', sourceWarehouseId: 'w-a', sourceDoorId: 'd-a-1', destinationWarehouseId: 'w-c', destinationDoorId: null,
       po: '4500123456', pallets: 25, notes: 'Move from WHSE A to WHSE C.', dueTime: '10:00 AM', createdAt: nowISO(), timestamps: { Assigned: nowISO() }
     },
     {
-      id: 'TASK-1002', requestId: 'ET-2026-000001', type: 'empty', companyId: 'rnf', assignedTo: 'u-shunter', status: 'Assigned',
+      id: 'TASK-1002', requestId: 'ET-2026-000001', type: 'empty', companyId: 'rnf', assignedTo: null, status: 'Assigned',
       trailerId: 't-006', sourceWarehouseId: null, sourceDoorId: null, destinationWarehouseId: 'w-b', destinationDoorId: null,
       po: '', pallets: 0, notes: 'Deliver empty trailer to WHSE B.', dueTime: '11:30 AM', createdAt: nowISO(), timestamps: { Assigned: nowISO() }
     }
@@ -121,7 +120,7 @@ function createSeed() {
 
   const movements = [
     { id: uid('M'), type: 'request', message: 'RNF pickup request PK-2026-000001 auto approved.', userId: 'system', actorName: 'System', actorRole: 'system', actorEmail: '', createdAt: nowISO(), trailerId: 't-001' },
-    { id: uid('M'), type: 'task', message: 'Task TASK-1001 assigned to John Shunter.', userId: 'system', actorName: 'System', actorRole: 'system', actorEmail: '', createdAt: nowISO(), trailerId: 't-001' }
+    { id: uid('M'), type: 'task', message: 'Task TASK-1001 created and waiting for shunter assignment.', userId: 'system', actorName: 'System', actorRole: 'system', actorEmail: '', createdAt: nowISO(), trailerId: 't-001' }
   ];
 
   return { companies, users, warehouses, doors, trailers, requests, tasks, movements, invitations: [] };
@@ -140,6 +139,7 @@ function getInitialData() {
 function useTrailerData() {
   const [data, setData] = useState(getInitialData);
   const [sharedMovements, setSharedMovements] = useState([]);
+  const [sharedUsers, setSharedUsers] = useState([]);
   const [toast, setToast] = useState('');
 
   useEffect(() => {
@@ -160,6 +160,23 @@ function useTrailerData() {
       }));
     }, (error) => {
       console.error('Unable to load shared activity log:', error);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!db) return undefined;
+    return onSnapshot(collection(db, 'users'), (snapshot) => {
+      setSharedUsers(snapshot.docs.map((userDoc) => {
+        const profile = userDoc.data();
+        return {
+          id: userDoc.id,
+          ...profile,
+          companyId: profile.companyId || (String(profile.company || '').toLowerCase().includes('rnf') ? 'rnf' : 'hopewell'),
+          active: profile.active !== false
+        };
+      }));
+    }, (error) => {
+      console.error('Unable to load portal users:', error);
     });
   }, []);
 
@@ -372,7 +389,7 @@ function useTrailerData() {
       const sourceDoorId = trailerId ? copy.trailers.find((t) => t.id === trailerId)?.doorId || null : null;
       const sourceWarehouseId = request.sourceWarehouseId || (trailerId ? copy.trailers.find((t) => t.id === trailerId)?.warehouseId : null);
       const task = {
-        id: uid('TASK'), requestId: request.id, type: request.type, companyId: request.companyId, assignedTo: 'u-shunter', status: 'Assigned',
+        id: uid('TASK'), requestId: request.id, type: request.type, companyId: request.companyId, assignedTo: null, status: 'Assigned',
         trailerId, sourceWarehouseId, sourceDoorId, destinationWarehouseId: request.destinationWarehouseId, destinationDoorId: null,
         po: request.po, pallets: request.pallets, notes: request.notes, dueTime: request.appointment || 'Today', createdAt: nowISO(), timestamps: { Assigned: nowISO() }
       };
@@ -401,7 +418,7 @@ function useTrailerData() {
     copy.tasks.unshift(task);
     req.status = 'Assigned'; req.approvalType = 'Manual Approved'; req.approvedBy = user.id;
     if (req.trailerId) t.activeTaskId = task.id;
-    const assignedShunter = copy.users.find((u) => u.id === shunterId);
+    const assignedShunter = sharedUsers.find((u) => u.id === shunterId) || copy.users.find((u) => u.id === shunterId);
     addMovement(copy, `${req.id} approved and assigned to ${assignedShunter?.name || 'a shunter'}.`, user, req.trailerId, 'task');
   }, 'Request approved and assigned.');
 
@@ -463,7 +480,10 @@ function useTrailerData() {
     setToast('Demo data reset.');
   };
 
-  const visibleData = sharedMovements.length ? { ...data, movements: sharedMovements } : data;
+  const visibleMovements = (sharedMovements.length ? sharedMovements : data.movements)
+    .filter((movement) => !String(movement.message || '').includes('John Shunter'));
+  const visibleUsers = sharedUsers.length ? sharedUsers : data.users.filter((portalUser) => portalUser.id !== 'u-shunter');
+  const visibleData = { ...data, movements: visibleMovements, users: visibleUsers };
   return { data: visibleData, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
 }
 
