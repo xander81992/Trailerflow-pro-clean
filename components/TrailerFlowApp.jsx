@@ -300,7 +300,7 @@ function useTrailerData() {
     if (!warehouse) throw new Error('Warehouse not found.');
     const warehouseDoors = copy.doors.filter((d) => d.warehouseId === warehouseId);
     if (warehouseDoors.some((d) => d.trailerId)) throw new Error('Cannot delete this warehouse because one or more doors still have trailers. Move the trailers first.');
-    if (copy.tasks.some((t) => t.status !== 'Completed' && (t.sourceWarehouseId === warehouseId || t.destinationWarehouseId === warehouseId))) throw new Error('Cannot delete this warehouse because it has active shunter tasks.');
+    if (copy.tasks.some((t) => isActiveTask(t) && (t.sourceWarehouseId === warehouseId || t.destinationWarehouseId === warehouseId))) throw new Error('Cannot delete this warehouse because it has active shunter tasks.');
     copy.doors = copy.doors.filter((d) => d.warehouseId !== warehouseId);
     copy.warehouses = copy.warehouses.filter((w) => w.id !== warehouseId);
     addMovement(copy, `${warehouse.name} deleted with ${warehouseDoors.length} empty doors.`, user.id, null, 'audit');
@@ -326,7 +326,7 @@ function useTrailerData() {
     const door = copy.doors.find((d) => d.id === doorId);
     if (!door) throw new Error('Door not found.');
     if (door.trailerId) throw new Error('Cannot delete this door because it currently has a trailer. Move the trailer first.');
-    if (copy.tasks.some((t) => t.status !== 'Completed' && (t.sourceDoorId === doorId || t.destinationDoorId === doorId))) throw new Error('Cannot delete this door because it is used by an active task.');
+    if (copy.tasks.some((t) => isActiveTask(t) && (t.sourceDoorId === doorId || t.destinationDoorId === doorId))) throw new Error('Cannot delete this door because it is used by an active task.');
     copy.doors = copy.doors.filter((d) => d.id !== doorId);
     addMovement(copy, `Door ${door.code} deleted.`, user.id, null, 'audit');
   }, 'Door deleted.');
@@ -741,7 +741,7 @@ function Landing({ data, openLogin }) {
     trailers: data.trailers.length,
     whses: data.warehouses.length,
     doors: data.doors.length,
-    active: data.tasks.filter((t) => t.status !== 'Completed').length
+    active: data.tasks.filter(isActiveTask).length
   }), [data]);
   return (
     <div className="landing">
@@ -890,6 +890,15 @@ function PageRouter({ user, page, search, store }) {
   return <AdminDashboard user={user} store={store} search={search} />;
 }
 
+
+function isActiveTask(task) {
+  return !['Completed', 'Cancelled'].includes(task.status);
+}
+
+function isOpenRequest(request) {
+  return !['Completed', 'Cancelled'].includes(request.status);
+}
+
 function getStats(data, companyId = null) {
   const trailers = companyId ? data.trailers.filter((t) => t.companyId === companyId) : data.trailers;
   const requests = companyId ? data.requests.filter((r) => r.companyId === companyId) : data.requests;
@@ -899,9 +908,9 @@ function getStats(data, companyId = null) {
     loaded: trailers.filter((t) => t.status === 'Loaded').length,
     empty: trailers.filter((t) => t.status === 'Empty').length,
     transit: trailers.filter((t) => t.status === 'In Transit').length,
-    openRequests: requests.filter((r) => r.status !== 'Completed').length,
+    openRequests: requests.filter(isOpenRequest).length,
     completed: requests.filter((r) => r.status === 'Completed').length,
-    activeTasks: tasks.filter((t) => t.status !== 'Completed').length,
+    activeTasks: tasks.filter(isActiveTask).length,
     occupiedDoors: data.doors.filter((d) => d.trailerId).length,
     totalDoors: data.doors.length
   };
@@ -1068,7 +1077,7 @@ function getModernDashboardStats(data, companyId = null) {
   const maintenance = data.doors.filter((d) => d.status === 'Maintenance').length;
   const occupiedDoors = data.doors.filter((d) => d.trailerId).length;
   const availableDoors = data.doors.length - occupiedDoors - maintenance;
-  return { totalDoors: data.doors.length, availableDoors, occupiedDoors, loadedTrailers, emptyTrailers, inTransit, maintenance, totalTrailers: trailers.length, openRequests: data.requests.filter((r) => r.status !== 'Completed').length, activeTasks: data.tasks.filter((t) => t.status !== 'Completed').length, activeShunters: data.users.filter((u) => u.role === 'shunter' && u.active !== false).length || 0 };
+  return { totalDoors: data.doors.length, availableDoors, occupiedDoors, loadedTrailers, emptyTrailers, inTransit, maintenance, totalTrailers: trailers.length, openRequests: data.requests.filter(isOpenRequest).length, activeTasks: data.tasks.filter(isActiveTask).length, activeShunters: data.users.filter((u) => u.role === 'shunter' && u.active !== false).length || 0 };
 }
 
 function DashboardKpiCards({ stats }) {
@@ -1374,7 +1383,7 @@ function ActivityList({ data }) {
 }
 
 function RequestsTable({ data, limit = 999 }) {
-  const rows = data.requests.filter((r) => r.status !== 'Completed').slice(0, limit);
+  const rows = data.requests.filter(isOpenRequest).slice(0, limit);
   if (!rows.length) return <div className="empty-state">No open requests.</div>;
   return <div className="table-wrap"><table className="tf2-task-table"><thead><tr><th>Request</th><th>Company</th><th>Route</th><th>Status</th><th>PO</th></tr></thead><tbody>
     {rows.map((r) => <tr key={r.id}>
@@ -1388,7 +1397,7 @@ function RequestsTable({ data, limit = 999 }) {
 }
 
 function TasksMini({ data }) {
-  const rows = data.tasks.filter((t) => t.status !== 'Completed').slice(0, 8);
+  const rows = data.tasks.filter(isActiveTask).slice(0, 8);
   if (!rows.length) return <div className="empty-state">No active shunter tasks.</div>;
   return <div className="table-wrap"><table className="tf2-task-table"><thead><tr><th>Task</th><th>Trailer</th><th>Route</th><th>Assigned To</th><th>Status</th></tr></thead><tbody>
     {rows.map((t) => <tr key={t.id}>
