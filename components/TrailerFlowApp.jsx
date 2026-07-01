@@ -443,23 +443,54 @@ function useTrailerData() {
     if (!task) throw new Error('Task not found.');
     const request = copy.requests.find((r) => r.id === task.requestId);
     const trailer = task.trailerId ? copy.trailers.find((t) => t.id === task.trailerId) : null;
+
     if (nextStatus === 'Picked Up' && trailer) {
+      // Save the trailer status before it goes in transit.
+      // This prevents an Empty trailer from turning into Loaded after drop.
+      task.originalTrailerStatus = task.originalTrailerStatus || trailer.status;
+      task.sourceWarehouseId = task.sourceWarehouseId || trailer.warehouseId || null;
+      task.sourceDoorId = task.sourceDoorId || trailer.doorId || null;
+
       if (trailer.doorId) {
         const sourceDoor = copy.doors.find((d) => d.id === trailer.doorId);
         if (sourceDoor) { sourceDoor.trailerId = null; sourceDoor.status = 'Empty'; sourceDoor.updatedAt = nowISO(); }
       }
       trailer.status = 'In Transit'; trailer.warehouseId = null; trailer.doorId = null; trailer.lastMovedAt = nowISO();
     }
+
     if (nextStatus === 'Dropped') {
-      if (!destinationDoorId) throw new Error('Select an available destination door before dropping.');
-      const door = copy.doors.find((d) => d.id === destinationDoorId);
-      if (!door || door.trailerId) throw new Error('Destination door is no longer available. One door can only have one trailer.');
-      if (trailer) {
-        door.trailerId = trailer.id; door.status = 'Occupied'; door.updatedAt = nowISO();
-        trailer.warehouseId = door.warehouseId; trailer.doorId = door.id; trailer.status = task.type === 'empty' ? 'Empty' : 'Loaded'; trailer.lastMovedAt = nowISO();
+      if (!destinationDoorId) throw new Error('Select a destination door or warehouse yard before dropping.');
+      const dropToYard = destinationDoorId === '__YARD__';
+
+      const nextTrailerStatus = task.type === 'empty' || task.originalTrailerStatus === 'Empty'
+        ? 'Empty'
+        : 'Loaded';
+
+      if (dropToYard) {
+        if (!task.destinationWarehouseId) throw new Error('Destination warehouse is missing for this task.');
+        if (trailer) {
+          trailer.warehouseId = task.destinationWarehouseId;
+          trailer.doorId = null;
+          trailer.status = nextTrailerStatus;
+          trailer.lastMovedAt = nowISO();
+        }
+        task.destinationDoorId = null;
+        task.destinationLocationType = 'Yard';
+      } else {
+        const door = copy.doors.find((d) => d.id === destinationDoorId);
+        if (!door || door.trailerId) throw new Error('Destination door is no longer available. One door can only have one trailer.');
+        if (trailer) {
+          door.trailerId = trailer.id; door.status = 'Occupied'; door.updatedAt = nowISO();
+          trailer.warehouseId = door.warehouseId;
+          trailer.doorId = door.id;
+          trailer.status = nextTrailerStatus;
+          trailer.lastMovedAt = nowISO();
+        }
+        task.destinationDoorId = destinationDoorId;
+        task.destinationLocationType = 'Door';
       }
-      task.destinationDoorId = destinationDoorId;
     }
+
     task.status = nextStatus;
     task.timestamps = task.timestamps || {};
     task.timestamps[nextStatus] = nowISO();
@@ -1760,10 +1791,10 @@ function ShunterTasks({ user, store, completedOnly = false, search = '' }) {
     const availableDoors = data.doors.filter((d) => !d.trailerId && d.warehouseId === task.destinationWarehouseId && d.status !== 'Maintenance');
     return <div className="task-card" key={task.id}>
       <div className="task-head"><div><h2>{task.id}</h2><p className="card-sub">{task.type === 'empty' ? 'Empty Trailer Request' : 'Pickup Task'} • {task.po || 'No PO'} • {task.pallets} pallets</p></div><span className={`badge ${iconForStatus(task.status)}`}>{task.status}</span></div>
-      <div className="task-route"><div className="route-box"><strong>Source</strong><br />{data.warehouses.find((w) => w.id === task.sourceWarehouseId)?.name || 'Yard / Available Empty'}<br />{task.sourceDoorId ? `Door ${data.doors.find((d) => d.id === task.sourceDoorId)?.code}` : ''}</div><div className="route-arrow">→</div><div className="route-box"><strong>Destination</strong><br />{data.warehouses.find((w) => w.id === task.destinationWarehouseId)?.name}<br />{task.destinationDoorId ? `Door ${data.doors.find((d) => d.id === task.destinationDoorId)?.code}` : 'Select door before drop'}</div><div className="route-box"><strong>Trailer</strong><br />{trailer?.number || 'Trailer TBD'}<br />{trailer?.status || ''}</div></div>
+      <div className="task-route"><div className="route-box"><strong>Source</strong><br />{data.warehouses.find((w) => w.id === task.sourceWarehouseId)?.name || 'Yard / Available Empty'}<br />{task.sourceDoorId ? `Door ${data.doors.find((d) => d.id === task.sourceDoorId)?.code}` : ''}</div><div className="route-arrow">→</div><div className="route-box"><strong>Destination</strong><br />{data.warehouses.find((w) => w.id === task.destinationWarehouseId)?.name}<br />{task.destinationLocationType === 'Yard' ? 'Warehouse Yard' : task.destinationDoorId ? `Door ${data.doors.find((d) => d.id === task.destinationDoorId)?.code}` : 'Select door or yard before drop'}</div><div className="route-box"><strong>Trailer</strong><br />{trailer?.number || 'Trailer TBD'}<br />{trailer?.status || ''}</div></div>
       <Progress current={task.status} />
-      {task.status === 'Picked Up' ? <div className="notice yellow"><strong>Select an empty destination door before dropping.</strong><br />This prevents more than one trailer from being assigned to the same door.</div> : null}
-      {task.status === 'Picked Up' ? <Field label="Available Destination Door"><select value={dropDoor[task.id] || ''} onChange={(e) => setDropDoor({ ...dropDoor, [task.id]: e.target.value })}><option value="">Select empty door</option>{availableDoors.map((d) => <option key={d.id} value={d.id}>{d.code}</option>)}</select></Field> : null}
+      {task.status === 'Picked Up' ? <div className="notice yellow"><strong>Select destination door or warehouse yard before dropping.</strong><br />Choose Warehouse Yard when the trailer is at the warehouse but not assigned to a door.</div> : null}
+      {task.status === 'Picked Up' ? <Field label="Destination Door / Warehouse Yard"><select value={dropDoor[task.id] || ''} onChange={(e) => setDropDoor({ ...dropDoor, [task.id]: e.target.value })}><option value="">Select destination</option><option value="__YARD__">Warehouse Yard - no door assigned</option>{availableDoors.map((d) => <option key={d.id} value={d.id}>Door {d.code}</option>)}</select></Field> : null}
       <div className="shunter-actions">
         {taskButtons.map((status) => <button key={status} className={`btn ${status === 'Completed' ? 'btn-green' : status === 'Dropped' ? 'btn-warning' : 'btn-primary'}`} disabled={!canMove(task.status, status)} onClick={() => { try { store.updateTaskStatus(task.id, status, dropDoor[task.id], user); } catch (e) { alert(e.message); } }}>{status}</button>)}
       </div>
@@ -1813,7 +1844,7 @@ function AdminTasks({ user, store, search }) {
         <Field label="Trailer"><select value={form.trailerId} onChange={(e) => setForm({ ...form, trailerId: e.target.value })}><option value="">Select available trailer</option>{trailers.map((t) => {
           const whse = data.warehouses.find((w) => w.id === t.warehouseId);
           const door = data.doors.find((d) => d.id === t.doorId);
-          return <option key={t.id} value={t.id}>{t.number} • {t.status} • {whse?.name || 'In Transit'}{door ? ` • Door ${door.code}` : ''}</option>;
+          return <option key={t.id} value={t.id}>{t.number} • {t.status} • {trailerLocationLabel(data, t)}</option>;
         })}</select></Field>
         <Field label="Destination Warehouse"><select value={form.destinationWarehouseId} onChange={(e) => setForm({ ...form, destinationWarehouseId: e.target.value })}><option value="">Select destination</option>{data.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
         <Field label="Assign To"><select value={form.assignedTo} onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}><option value="">Unassigned / Queue</option>{shunters.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
