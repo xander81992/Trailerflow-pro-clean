@@ -923,6 +923,17 @@ function DashboardDesignStyles() {
     .tf2-mini-stat-icon { width: 42px; height: 42px; border-radius: 14px; background: #eff6ff; display: grid; place-items: center; font-size: 20px; }
     .tf2-mini-stat span { color: #64748b; font-size: 13px; font-weight: 800; }
     .tf2-mini-stat strong { display: block; color: #2563eb; font-size: 24px; margin-top: 2px; }
+
+    .tf2-door-warehouse-list { display: grid; gap: 18px; }
+    .tf2-door-warehouse-section { background: white; border: 1px solid #e2e8f0; border-radius: 22px; padding: 16px; box-shadow: 0 10px 24px rgba(15,23,42,.05); }
+    .tf2-door-warehouse-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
+    .tf2-door-warehouse-header h4 { margin: 0; color: #0f172a; font-size: 17px; }
+    .tf2-door-warehouse-header p { margin: 4px 0 0; color: #64748b; font-size: 13px; }
+    .tf2-door-warehouse-badge { min-width: 42px; height: 42px; border-radius: 14px; background: #eff6ff; color: #2563eb; display: grid; place-items: center; font-weight: 900; }
+    .tf2-door-details-grid.grouped { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    @media (max-width: 1200px) { .tf2-door-details-grid.grouped { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (max-width: 900px) { .tf2-door-details-grid.grouped { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 600px) { .tf2-door-details-grid.grouped { grid-template-columns: 1fr; } .tf2-door-warehouse-header { align-items: flex-start; } }
     @media (max-width: 1200px) { .tf2-kpi-grid, .tf2-door-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tf2-main-grid, .tf2-bottom-grid { grid-template-columns: 1fr; } .tf2-door-details-grid, .tf2-map-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 720px) { .tf2-kpi-grid, .tf2-door-summary-grid, .tf2-door-details-grid, .tf2-map-grid { grid-template-columns: 1fr; } .tf2-modern-top { flex-direction: column; align-items: flex-start; } .tf2-filter-row { width: 100%; flex-wrap: wrap; } }
   `}</style>;
@@ -1016,21 +1027,128 @@ function DashboardKpiCards({ stats }) {
 
 function DoorSummary({ data }) {
   const [showDetails, setShowDetails] = useState(false);
-  return <div className="tf2-modern-card"><div className="tf2-modern-card-head"><div className="tf2-modern-title"><div className="tf2-modern-title-icon">📊</div><div><h3>Door Summary</h3><p>Quick overview of door utilization across all warehouses</p></div></div><button className="tf2-blue-btn" onClick={() => setShowDetails(!showDetails)}>{showDetails ? 'Hide Door Details' : 'View Door Details'} {showDetails ? '⌃' : '⌄'}</button></div><div className="tf2-door-summary-grid">{data.warehouses.map((warehouse, index) => {
-    const doors = data.doors.filter((d) => d.warehouseId === warehouse.id);
-    const occupied = doors.filter((d) => d.trailerId).length;
-    const maintenance = doors.filter((d) => d.status === 'Maintenance').length;
-    const available = doors.length - occupied - maintenance;
-    const pct = doors.length ? Math.round((available / doors.length) * 100) : 0;
-    const letter = warehouse.code || String.fromCharCode(65 + index);
-    return <div className="tf2-whse-summary" key={warehouse.id}><div className="tf2-whse-header"><div className="tf2-whse-letter">{letter}</div><div><h4>{warehouse.name}</h4><small>{doors.length} Doors</small></div></div><div className="tf2-whse-counts"><div><div className="tf2-count-green">{available}</div><span className="tf2-count-label">Available</span></div><div><div className="tf2-count-orange">{occupied}</div><span className="tf2-count-label">Occupied</span></div></div><div className="tf2-util-bar"><i style={{ width: `${pct}%` }} /></div></div>;
-  })}</div>{showDetails ? <div className="tf2-door-details-wrap"><div className="tf2-door-details-grid">{data.doors.map((door) => {
-    const trailer = data.trailers.find((t) => t.id === door.trailerId);
-    const company = trailer ? data.companies.find((c) => c.id === trailer.companyId)?.name || '' : '';
-    const isOccupied = Boolean(trailer);
-    const isMaintenance = door.status === 'Maintenance';
-    return <div key={door.id} className={`tf2-door-mini ${isOccupied ? 'occupied' : ''} ${isMaintenance ? 'maintenance' : ''}`}><div className="tf2-door-mini-top"><strong>{door.code}</strong><span>{isMaintenance ? '🔧' : isOccupied ? '🚛' : '✨'}</span></div><h4>{trailer?.number || 'Empty Door'}</h4><p>{company || 'Available for trailer assignment'}</p><p>{trailer?.status || door.status}</p><div className="tf2-door-pill">{isMaintenance ? 'Maintenance' : isOccupied ? 'Trailer On Door' : 'Available'}</div></div>;
-  })}</div></div> : null}</div>;
+
+  return (
+    <div className="tf2-modern-card">
+      <div className="tf2-modern-card-head">
+        <div className="tf2-modern-title">
+          <div className="tf2-modern-title-icon">📊</div>
+          <div>
+            <h3>Door Summary</h3>
+            <p>Quick overview of door utilization across all warehouses</p>
+          </div>
+        </div>
+
+        <button className="tf2-blue-btn" onClick={() => setShowDetails(!showDetails)}>
+          {showDetails ? 'Hide Door Details' : 'View Door Details'} {showDetails ? '⌃' : '⌄'}
+        </button>
+      </div>
+
+      <div className="tf2-door-summary-grid">
+        {data.warehouses.map((warehouse, index) => {
+          const doors = data.doors.filter((d) => d.warehouseId === warehouse.id);
+          const occupied = doors.filter((d) => d.trailerId).length;
+          const maintenance = doors.filter((d) => d.status === 'Maintenance').length;
+          const available = doors.length - occupied - maintenance;
+          const pct = doors.length ? Math.round((available / doors.length) * 100) : 0;
+          const letter = warehouse.code || String.fromCharCode(65 + index);
+
+          return (
+            <div className="tf2-whse-summary" key={warehouse.id}>
+              <div className="tf2-whse-header">
+                <div className="tf2-whse-letter">{letter}</div>
+                <div>
+                  <h4>{warehouse.name}</h4>
+                  <small>{doors.length} Doors</small>
+                </div>
+              </div>
+
+              <div className="tf2-whse-counts">
+                <div>
+                  <div className="tf2-count-green">{available}</div>
+                  <span className="tf2-count-label">Available</span>
+                </div>
+
+                <div>
+                  <div className="tf2-count-orange">{occupied}</div>
+                  <span className="tf2-count-label">Occupied</span>
+                </div>
+              </div>
+
+              <div className="tf2-util-bar">
+                <i style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {showDetails ? (
+        <div className="tf2-door-details-wrap">
+          <div className="tf2-door-warehouse-list">
+            {data.warehouses.map((warehouse) => {
+              const warehouseDoors = data.doors.filter((d) => d.warehouseId === warehouse.id);
+              const occupied = warehouseDoors.filter((d) => d.trailerId).length;
+              const available = warehouseDoors.filter((d) => !d.trailerId && d.status !== 'Maintenance').length;
+              const maintenance = warehouseDoors.filter((d) => d.status === 'Maintenance').length;
+
+              return (
+                <div className="tf2-door-warehouse-section" key={warehouse.id}>
+                  <div className="tf2-door-warehouse-header">
+                    <div>
+                      <h4>{warehouse.name}</h4>
+                      <p>
+                        {warehouseDoors.length} doors • {available} available • {occupied} occupied
+                        {maintenance ? ` • ${maintenance} maintenance` : ''}
+                      </p>
+                    </div>
+
+                    <span className="tf2-door-warehouse-badge">
+                      {warehouse.code}
+                    </span>
+                  </div>
+
+                  <div className="tf2-door-details-grid grouped">
+                    {warehouseDoors.map((door) => {
+                      const trailer = data.trailers.find((t) => t.id === door.trailerId);
+
+                      const company = trailer
+                        ? data.companies.find((c) => c.id === trailer.companyId)?.name || ''
+                        : '';
+
+                      const isOccupied = Boolean(trailer);
+                      const isMaintenance = door.status === 'Maintenance';
+
+                      return (
+                        <div
+                          key={door.id}
+                          className={`tf2-door-mini ${isOccupied ? 'occupied' : ''} ${isMaintenance ? 'maintenance' : ''}`}
+                        >
+                          <div className="tf2-door-mini-top">
+                            <strong>{door.code}</strong>
+                            <span>{isMaintenance ? '🔧' : isOccupied ? '🚛' : '✨'}</span>
+                          </div>
+
+                          <h4>{trailer?.number || 'Empty Door'}</h4>
+
+                          <p>{company || 'Available for trailer assignment'}</p>
+                          <p>{trailer?.status || door.status}</p>
+
+                          <div className="tf2-door-pill">
+                            {isMaintenance ? 'Maintenance' : isOccupied ? 'Trailer On Door' : 'Available'}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function RecentActivityPanel({ data, companyId = null }) {
