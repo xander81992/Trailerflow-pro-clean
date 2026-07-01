@@ -1708,67 +1708,6 @@ function RequestForm({ user, store, type }) {
     <div className="form-actions"><button className="btn btn-green" onClick={submit}>Submit Request</button></div>
   </div>;
 }
-) {
-  const data = store.data;
-  const blankForm = {
-    type,
-    po: '',
-    reference: '',
-    sourceWarehouseId: '',
-    destinationWarehouseId: data.warehouses[0]?.id || '',
-    pallets: '',
-    trailerId: '',
-    priority: 'Normal',
-    appointment: '',
-    notes: ''
-  };
-  const [form, setForm] = useState(blankForm);
-
-  const trailers = data.trailers.filter((t) => {
-    if (t.companyId !== user.companyId || t.activeTaskId) return false;
-
-    if (type === 'pickup') {
-      if (!form.sourceWarehouseId) return false;
-      return t.warehouseId === form.sourceWarehouseId && Boolean(t.doorId);
-    }
-
-    return t.status === 'Empty';
-  });
-
-  const submit = () => {
-    try {
-      if (type === 'pickup' && !form.sourceWarehouseId) throw new Error('Select a source warehouse.');
-      if (type === 'pickup' && !form.trailerId) throw new Error('Select the trailer number from the selected source warehouse.');
-      store.createRequest({ ...form, type }, user);
-      setForm(blankForm);
-    } catch (e) {
-      alert(e.message);
-    }
-  };
-
-  return <div className="card"><h2>{type === 'pickup' ? 'Book Intercompany Pickup' : 'Request Empty Trailer'}</h2><p className="card-sub">RNF submissions are automatically approved and create shunter tasks.</p><div className="notice green">Auto Approval: RNF is configured as a trusted intercompany requestor.</div>
-    <div className="form-grid">
-      {type === 'pickup' ? <>
-        <Field label="PO Number"><input value={form.po} onChange={(e) => setForm({ ...form, po: e.target.value })} placeholder="4500123456" /></Field>
-        <Field label="Reference / STO / OBD"><input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} placeholder="Optional" /></Field>
-        <Field label="Source Warehouse"><select value={form.sourceWarehouseId} onChange={(e) => setForm({ ...form, sourceWarehouseId: e.target.value, trailerId: '' })}><option value="">Select source</option>{data.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
-      </> : null}
-      <Field label="Destination Warehouse"><select value={form.destinationWarehouseId} onChange={(e) => setForm({ ...form, destinationWarehouseId: e.target.value })}>{data.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
-      <Field label="Number of Pallets"><input type="number" value={form.pallets} onChange={(e) => setForm({ ...form, pallets: e.target.value })} placeholder="25" /></Field>
-      <Field label={type === 'pickup' ? 'Trailer Number From Source Location' : 'Trailer Number'}><select value={form.trailerId} onChange={(e) => setForm({ ...form, trailerId: e.target.value })}><option value="">{type === 'pickup' ? (form.sourceWarehouseId ? 'Select trailer at this source' : 'Select source first') : 'Auto select empty trailer'}</option>{trailers.map((t) => {
-        const door = data.doors.find((d) => d.id === t.doorId);
-        const whse = data.warehouses.find((w) => w.id === t.warehouseId);
-        return <option key={t.id} value={t.id}>{t.number} • {t.status} • {whse?.name || 'Yard'}{door ? ` • Door ${door.code}` : ''}</option>;
-      })}</select></Field>
-      <Field label="Priority"><select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}><option>Normal</option><option>High</option><option>Urgent</option></select></Field>
-      <Field label="Needed / Appointment Time"><input value={form.appointment} onChange={(e) => setForm({ ...form, appointment: e.target.value })} placeholder="Today 10:30 AM" /></Field>
-      <Field label="Notes"><textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Special instructions" /></Field>
-    </div>
-    {type === 'pickup' && form.sourceWarehouseId && !trailers.length ? <div className="notice yellow">No available RNF trailers found at this source warehouse. Check trailer location or active task status.</div> : null}
-    <div className="form-actions"><button className="btn btn-green" onClick={submit}>Submit Request</button></div>
-  </div>;
-}
-
 function RNFTrailerLocations({ user, store, search = '', compact = false }) {
   const data = store.data;
   const trailers = data.trailers.filter((t) => t.companyId === user.companyId && `${t.number} ${t.plate} ${t.status} ${data.warehouses.find((w) => w.id === t.warehouseId)?.name || ''}`.toLowerCase().includes(search.toLowerCase()));
