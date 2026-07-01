@@ -468,6 +468,65 @@ function useTrailerData() {
     addMovement(copy, `${task.id} marked ${nextStatus}.`, user.id, trailer?.id || null, 'movement');
   }, `Task marked ${nextStatus}.`);
 
+
+  const cancelTask = (taskId, user) => update((copy) => {
+    const task = copy.tasks.find((t) => t.id === taskId);
+    if (!task) throw new Error('Task not found.');
+    if (task.status === 'Completed') throw new Error('Completed tasks cannot be cancelled.');
+    if (task.status === 'Cancelled') throw new Error('Task is already cancelled.');
+
+    const trailer = task.trailerId ? copy.trailers.find((t) => t.id === task.trailerId) : null;
+    const request = task.requestId ? copy.requests.find((r) => r.id === task.requestId) : null;
+
+    task.status = 'Cancelled';
+    task.timestamps = task.timestamps || {};
+    task.timestamps.Cancelled = nowISO();
+
+    if (trailer?.activeTaskId === task.id) {
+      trailer.activeTaskId = null;
+      trailer.lastMovedAt = nowISO();
+    }
+
+    if (request && request.status !== 'Completed') {
+      request.status = 'Cancelled';
+    }
+
+    addMovement(copy, `${task.id} cancelled by ${user.name}.`, user.id, trailer?.id || null, 'task');
+  }, 'Task cancelled. Trailer is now available again.');
+
+  const createManualTask = (payload, user) => update((copy) => {
+    const trailer = copy.trailers.find((t) => t.id === payload.trailerId);
+    if (!trailer) throw new Error('Select a trailer.');
+    if (trailer.activeTaskId) throw new Error('This trailer already has an active task.');
+    if (!payload.destinationWarehouseId) throw new Error('Select a destination warehouse.');
+
+    const sourceDoor = trailer.doorId ? copy.doors.find((d) => d.id === trailer.doorId) : null;
+    const task = {
+      id: uid('TASK'),
+      requestId: null,
+      type: payload.type || 'relocation',
+      companyId: trailer.companyId,
+      assignedTo: payload.assignedTo || null,
+      status: 'Assigned',
+      trailerId: trailer.id,
+      sourceWarehouseId: trailer.warehouseId || sourceDoor?.warehouseId || payload.sourceWarehouseId || null,
+      sourceDoorId: trailer.doorId || null,
+      destinationWarehouseId: payload.destinationWarehouseId,
+      destinationDoorId: null,
+      po: payload.po || '',
+      pallets: Number(payload.pallets || 0),
+      notes: payload.notes || 'Manual admin-created task.',
+      dueTime: payload.dueTime || 'Today',
+      createdAt: nowISO(),
+      createdBy: user.id,
+      timestamps: { Assigned: nowISO() }
+    };
+
+    copy.tasks.unshift(task);
+    trailer.activeTaskId = task.id;
+    addMovement(copy, `${task.id} manually created for trailer ${trailer.number}.`, user.id, trailer.id, 'task');
+  }, 'Manual task created.');
+
   const createInvite = (email, role, companyId, user) => update((copy) => {
     const token = Math.random().toString(36).slice(2, 12);
     copy.invitations.unshift({ id: uid('INV'), email, role, companyId, token, status: 'Pending', createdBy: user.id, createdAt: nowISO() });
@@ -483,7 +542,7 @@ function useTrailerData() {
 
   const visibleData = useMemo(() => mergePortalUsers(data, authUsers), [data, authUsers]);
 
-  return { data: visibleData, dataReady, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, createInvite, resetDemo };
+  return { data: visibleData, dataReady, toast, addWarehouse, updateWarehouse, deleteWarehouse, addDoor, updateDoor, deleteDoor, addTrailer, updateTrailer, deleteTrailer, createRequest, approveAndAssign, updateTaskStatus, cancelTask, createManualTask, createInvite, resetDemo };
 }
 
 function iconForStatus(status) {
@@ -1466,19 +1525,62 @@ function Trailers({ user, store, search }) {
 
 function RequestForm({ user, store, type }) {
   const data = store.data;
-  const [form, setForm] = useState({ type, po: '', reference: '', sourceWarehouseId: '', destinationWarehouseId: data.warehouses[0]?.id || '', pallets: '', trailerId: '', priority: 'Normal', appointment: '', notes: '' });
-  const trailers = data.trailers.filter((t) => t.companyId === user.companyId && !t.activeTaskId && (type === 'pickup' ? t.doorId : t.status === 'Empty'));
-  const submit = () => { try { store.createRequest({ ...form, type }, user); setForm({ type, po: '', reference: '', sourceWarehouseId: '', destinationWarehouseId: data.warehouses[0]?.id || '', pallets: '', trailerId: '', priority: 'Normal', appointment: '', notes: '' }); } catch (e) { alert(e.message); } };
+  const blankForm = {
+    type,
+    po: '',
+    reference: '',
+    sourceWarehouseId: '',
+    destinationWarehouseId: data.warehouses[0]?.id || '',
+    pallets: '',
+    trailerId: '',
+    priority: 'Normal',
+    appointment: '',
+    notes: ''
+  };
+  const [form, setForm] = useState(blankForm);
+
+  const trailers = data.trailers.filter((t) => {
+    if (t.companyId !== user.companyId || t.activeTaskId) return false;
+
+    if (type === 'pickup') {
+      if (!form.sourceWarehouseId) return false;
+      return t.warehouseId === form.sourceWarehouseId && Boolean(t.doorId);
+    }
+
+    return t.status === 'Empty';
+  });
+
+  const submit = () => {
+    try {
+      if (type === 'pickup' && !form.sourceWarehouseId) throw new Error('Select a source warehouse.');
+      if (type === 'pickup' && !form.trailerId) throw new Error('Select the trailer number from the selected source warehouse.');
+      store.createRequest({ ...form, type }, user);
+      setForm(blankForm);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
   return <div className="card"><h2>{type === 'pickup' ? 'Book Intercompany Pickup' : 'Request Empty Trailer'}</h2><p className="card-sub">RNF submissions are automatically approved and create shunter tasks.</p><div className="notice green">Auto Approval: RNF is configured as a trusted intercompany requestor.</div>
     <div className="form-grid">
-      {type === 'pickup' ? <><Field label="PO Number"><input value={form.po} onChange={(e) => setForm({ ...form, po: e.target.value })} placeholder="4500123456" /></Field><Field label="Reference / STO / OBD"><input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} placeholder="Optional" /></Field><Field label="Source Warehouse"><select value={form.sourceWarehouseId} onChange={(e) => setForm({ ...form, sourceWarehouseId: e.target.value })}><option value="">Select source</option>{data.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field></> : null}
+      {type === 'pickup' ? <>
+        <Field label="PO Number"><input value={form.po} onChange={(e) => setForm({ ...form, po: e.target.value })} placeholder="4500123456" /></Field>
+        <Field label="Reference / STO / OBD"><input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} placeholder="Optional" /></Field>
+        <Field label="Source Warehouse"><select value={form.sourceWarehouseId} onChange={(e) => setForm({ ...form, sourceWarehouseId: e.target.value, trailerId: '' })}><option value="">Select source</option>{data.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
+      </> : null}
       <Field label="Destination Warehouse"><select value={form.destinationWarehouseId} onChange={(e) => setForm({ ...form, destinationWarehouseId: e.target.value })}>{data.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
       <Field label="Number of Pallets"><input type="number" value={form.pallets} onChange={(e) => setForm({ ...form, pallets: e.target.value })} placeholder="25" /></Field>
-      <Field label="Trailer Number"><select value={form.trailerId} onChange={(e) => setForm({ ...form, trailerId: e.target.value })}><option value="">{type === 'pickup' ? 'Optional / assign later' : 'Auto select empty trailer'}</option>{trailers.map((t) => <option key={t.id} value={t.id}>{t.number} • {t.status}</option>)}</select></Field>
+      <Field label={type === 'pickup' ? 'Trailer Number From Source Location' : 'Trailer Number'}><select value={form.trailerId} onChange={(e) => setForm({ ...form, trailerId: e.target.value })}><option value="">{type === 'pickup' ? (form.sourceWarehouseId ? 'Select trailer at this source' : 'Select source first') : 'Auto select empty trailer'}</option>{trailers.map((t) => {
+        const door = data.doors.find((d) => d.id === t.doorId);
+        const whse = data.warehouses.find((w) => w.id === t.warehouseId);
+        return <option key={t.id} value={t.id}>{t.number} • {t.status} • {whse?.name || 'Yard'}{door ? ` • Door ${door.code}` : ''}</option>;
+      })}</select></Field>
       <Field label="Priority"><select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}><option>Normal</option><option>High</option><option>Urgent</option></select></Field>
       <Field label="Needed / Appointment Time"><input value={form.appointment} onChange={(e) => setForm({ ...form, appointment: e.target.value })} placeholder="Today 10:30 AM" /></Field>
       <Field label="Notes"><textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Special instructions" /></Field>
-    </div><div className="form-actions"><button className="btn btn-green" onClick={submit}>Submit Request</button></div>
+    </div>
+    {type === 'pickup' && form.sourceWarehouseId && !trailers.length ? <div className="notice yellow">No available RNF trailers found at this source warehouse. Check trailer location or active task status.</div> : null}
+    <div className="form-actions"><button className="btn btn-green" onClick={submit}>Submit Request</button></div>
   </div>;
 }
 
@@ -1523,7 +1625,7 @@ function ShunterTasks({ user, store, completedOnly = false, search = '' }) {
   const [dropDoor, setDropDoor] = useState({});
   // Show all active tasks to shunter, so tasks are not hidden by Firebase UID vs demo ID.
   const tasks = data.tasks.filter((t) =>
-    (completedOnly ? t.status === 'Completed' : t.status !== 'Completed') &&
+    (completedOnly ? ['Completed', 'Cancelled'].includes(t.status) : !['Completed', 'Cancelled'].includes(t.status)) &&
     `${t.id} ${t.po || ''} ${data.trailers.find((x) => x.id === t.trailerId)?.number || ''}`
       .toLowerCase()
       .includes(search.toLowerCase())
@@ -1547,6 +1649,7 @@ function ShunterTasks({ user, store, completedOnly = false, search = '' }) {
 }
 
 function canMove(current, next) {
+  if (current === 'Cancelled') return false;
   const order = ['Assigned', 'Started', 'Arrived', 'Picked Up', 'Dropped', 'Completed'];
   return order.indexOf(next) === order.indexOf(current) + 1;
 }
@@ -1563,11 +1666,54 @@ function Timeline({ task }) {
 }
 
 function AdminTasks({ user, store, search }) {
-  return <div className="card"><h2>All Shunter Tasks</h2><ShunterTaskTable data={store.data} search={search} /></div>;
+  const data = store.data;
+  const [form, setForm] = useState({ type: 'relocation', trailerId: '', destinationWarehouseId: '', assignedTo: '', dueTime: '', po: '', pallets: '', notes: '' });
+  const trailers = data.trailers.filter((t) => !t.activeTaskId);
+  const shunters = data.users.filter((u) => u.role === 'shunter' && u.active !== false);
+
+  const createTask = () => {
+    try {
+      store.createManualTask(form, user);
+      setForm({ type: 'relocation', trailerId: '', destinationWarehouseId: '', assignedTo: '', dueTime: '', po: '', pallets: '', notes: '' });
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  return <div className="section-stack">
+    <div className="card">
+      <h2>Create Manual Shunter Task</h2>
+      <p className="card-sub">Use this when Admin needs to move a trailer without an RNF request.</p>
+      <div className="form-grid">
+        <Field label="Task Type"><select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}><option value="relocation">Relocation</option><option value="pickup">Pickup</option><option value="empty">Empty Trailer</option></select></Field>
+        <Field label="Trailer"><select value={form.trailerId} onChange={(e) => setForm({ ...form, trailerId: e.target.value })}><option value="">Select available trailer</option>{trailers.map((t) => {
+          const whse = data.warehouses.find((w) => w.id === t.warehouseId);
+          const door = data.doors.find((d) => d.id === t.doorId);
+          return <option key={t.id} value={t.id}>{t.number} • {t.status} • {whse?.name || 'In Transit'}{door ? ` • Door ${door.code}` : ''}</option>;
+        })}</select></Field>
+        <Field label="Destination Warehouse"><select value={form.destinationWarehouseId} onChange={(e) => setForm({ ...form, destinationWarehouseId: e.target.value })}><option value="">Select destination</option>{data.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
+        <Field label="Assign To"><select value={form.assignedTo} onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}><option value="">Unassigned / Queue</option>{shunters.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
+        <Field label="Due Time"><input value={form.dueTime} onChange={(e) => setForm({ ...form, dueTime: e.target.value })} placeholder="Today 2:00 PM" /></Field>
+        <Field label="PO / Reference"><input value={form.po} onChange={(e) => setForm({ ...form, po: e.target.value })} placeholder="Optional" /></Field>
+        <Field label="Pallets"><input type="number" value={form.pallets} onChange={(e) => setForm({ ...form, pallets: e.target.value })} placeholder="0" /></Field>
+        <Field label="Notes"><textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Move instructions" /></Field>
+      </div>
+      <div className="form-actions"><button className="btn btn-primary" onClick={createTask}>Create Task</button></div>
+    </div>
+
+    <div className="card">
+      <h2>All Shunter Tasks</h2>
+      <ShunterTaskTable data={data} search={search} store={store} user={user} />
+    </div>
+  </div>;
 }
-function ShunterTaskTable({ data, search }) {
-  const rows = data.tasks.filter((t) => `${t.id} ${t.po} ${data.trailers.find((x) => x.id === t.trailerId)?.number || ''}`.toLowerCase().includes(search.toLowerCase()));
-  return <div className="table-wrap"><table><thead><tr><th>Task</th><th>Trailer</th><th>Route</th><th>Assigned To</th><th>Status</th></tr></thead><tbody>{rows.map((t) => <tr key={t.id}><td><strong>{t.id}</strong><br /><small>{t.po || '-'}</small></td><td>{data.trailers.find((x) => x.id === t.trailerId)?.number || 'TBD'}</td><td>{data.warehouses.find((w) => w.id === t.sourceWarehouseId)?.name || 'Yard'} → {data.warehouses.find((w) => w.id === t.destinationWarehouseId)?.name || '-'}</td><td>{assigneeName(data, t.assignedTo)}</td><td><span className={`badge ${iconForStatus(t.status)}`}>{t.status}</span></td></tr>)}</tbody></table></div>;
+
+function ShunterTaskTable({ data, search, store, user }) {
+  const rows = data.tasks.filter((t) => `${t.id} ${t.po || ''} ${data.trailers.find((x) => x.id === t.trailerId)?.number || ''}`.toLowerCase().includes(search.toLowerCase()));
+  return <div className="table-wrap"><table><thead><tr><th>Task</th><th>Trailer</th><th>Route</th><th>Assigned To</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((t) => {
+    const canCancel = !['Completed', 'Cancelled'].includes(t.status);
+    return <tr key={t.id}><td><strong>{t.id}</strong><br /><small>{t.po || '-'}</small></td><td>{data.trailers.find((x) => x.id === t.trailerId)?.number || 'TBD'}</td><td>{data.warehouses.find((w) => w.id === t.sourceWarehouseId)?.name || 'Yard'} → {data.warehouses.find((w) => w.id === t.destinationWarehouseId)?.name || '-'}</td><td>{assigneeName(data, t.assignedTo)}</td><td><span className={`badge ${iconForStatus(t.status)}`}>{t.status}</span></td><td>{canCancel ? <button className="btn btn-danger btn-small" onClick={() => { if (confirm(`Cancel ${t.id}?`)) { try { store.cancelTask(t.id, user); } catch (e) { alert(e.message); } } }}>Cancel</button> : '-'}</td></tr>;
+  })}</tbody></table></div>;
 }
 
 function UsersInvites({ user, store }) {
