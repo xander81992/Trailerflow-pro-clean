@@ -1002,6 +1002,28 @@ function DashboardDesignStyles() {
     @media (max-width: 1200px) { .tf2-door-details-grid.grouped { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
     @media (max-width: 900px) { .tf2-door-details-grid.grouped { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 600px) { .tf2-door-details-grid.grouped { grid-template-columns: 1fr; } .tf2-door-warehouse-header { align-items: flex-start; } }
+
+    .tf2-trailer-location-list { display: grid; gap: 18px; }
+    .tf2-trailer-warehouse-section { background: white; border: 1px solid #e2e8f0; border-radius: 22px; padding: 16px; box-shadow: 0 10px 24px rgba(15,23,42,.05); }
+    .tf2-trailer-warehouse-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
+    .tf2-trailer-warehouse-header h4 { margin: 0; color: #0f172a; font-size: 17px; }
+    .tf2-trailer-warehouse-header p { margin: 4px 0 0; color: #64748b; font-size: 13px; }
+    .tf2-trailer-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .tf2-trailer-mini { border-radius: 18px; border: 1px solid #e2e8f0; background: linear-gradient(180deg, #ffffff, #f8fafc); padding: 14px; min-height: 126px; box-shadow: 0 8px 18px rgba(15,23,42,.04); }
+    .tf2-trailer-mini.loaded { border-color: #86efac; background: linear-gradient(180deg, #ecfdf5, #ffffff); }
+    .tf2-trailer-mini.empty { border-color: #67e8f9; background: linear-gradient(180deg, #ecfeff, #ffffff); }
+    .tf2-trailer-mini.transit { border-color: #fed7aa; background: linear-gradient(180deg, #fff7ed, #ffffff); }
+    .tf2-trailer-mini-top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+    .tf2-trailer-mini h4 { margin: 14px 0 6px; color: #0f172a; font-size: 18px; letter-spacing: -.02em; }
+    .tf2-trailer-mini p { margin: 0; color: #64748b; font-size: 12px; line-height: 1.45; }
+    .tf2-trailer-mini small { display: inline-flex; margin-top: 10px; border-radius: 999px; padding: 6px 10px; background: #f1f5f9; color: #334155; font-weight: 900; text-transform: uppercase; font-size: 10px; }
+    .tf2-trailer-mini.loaded small { background: #dcfce7; color: #166534; }
+    .tf2-trailer-mini.empty small { background: #cffafe; color: #0e7490; }
+    .tf2-trailer-mini.transit small { background: #ffedd5; color: #9a3412; }
+    @media (max-width: 1200px) { .tf2-trailer-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (max-width: 900px) { .tf2-trailer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 600px) { .tf2-trailer-grid { grid-template-columns: 1fr; } .tf2-trailer-warehouse-header { align-items: flex-start; } }
+
     @media (max-width: 1200px) { .tf2-kpi-grid, .tf2-door-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tf2-main-grid, .tf2-bottom-grid { grid-template-columns: 1fr; } .tf2-door-details-grid, .tf2-map-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 720px) { .tf2-kpi-grid, .tf2-door-summary-grid, .tf2-door-details-grid, .tf2-map-grid { grid-template-columns: 1fr; } .tf2-modern-top { flex-direction: column; align-items: flex-start; } .tf2-filter-row { width: 100%; flex-wrap: wrap; } }
   `}</style>;
@@ -1035,6 +1057,7 @@ function AdminDashboard({ store }) {
     <ModernDashboardHeader userName="Alexander" />
     <DashboardKpiCards stats={stats} />
     <DoorSummary data={data} />
+    <TrailerVisibilityPanel data={data} />
     <div className="tf2-main-grid"><RecentActivityPanel data={data} /><LiveTrailerMap data={data} /></div>
     <div className="tf2-bottom-grid"><LegendBar stats={stats} /><TodayMiniStat icon="📅" label="Tasks Due Today" value={stats.activeTasks} /><TodayMiniStat icon="👥" label="Active Shunters" value={stats.activeShunters} /></div>
   </div>;
@@ -1048,6 +1071,7 @@ function RNFDashboard({ user, store }) {
     <ModernDashboardHeader userName="RNF User" />
     <DashboardKpiCards stats={stats} />
     <DoorSummary data={data} />
+    <TrailerVisibilityPanel data={data} companyId={user.companyId} />
     <div className="tf2-main-grid"><RecentActivityPanel data={data} companyId={user.companyId} /><LiveTrailerMap data={data} /></div>
     <div className="tf2-bottom-grid"><LegendBar stats={stats} /><TodayMiniStat icon="📅" label="Open RNF Requests" value={stats.openRequests} /><TodayMiniStat icon="🚛" label="RNF Trailers" value={stats.totalTrailers} /></div>
   </div>;
@@ -1060,6 +1084,7 @@ function RNFYardVisibilityPage({ user, store }) {
     <DashboardDesignStyles />
     <ModernDashboardHeader userName="RNF User" />
     <DoorSummary data={data} />
+    <TrailerVisibilityPanel data={data} companyId={user.companyId} />
     <div className="tf2-main-grid"><RecentActivityPanel data={data} companyId={user.companyId} /><LiveTrailerMap data={data} /></div>
     <div className="tf2-bottom-grid"><LegendBar stats={stats} /><TodayMiniStat icon="📦" label="Loaded Trailers" value={stats.loadedTrailers} /><TodayMiniStat icon="✅" label="Available Doors" value={stats.availableDoors} /></div>
   </div>;
@@ -1532,7 +1557,158 @@ function Trailers({ user, store, search }) {
 }
 
 
+
+function trailerLocationLabel(data, trailer) {
+  if (!trailer?.warehouseId) return 'In Transit / No Warehouse';
+  const warehouse = data.warehouses.find((w) => w.id === trailer.warehouseId);
+  const door = trailer.doorId ? data.doors.find((d) => d.id === trailer.doorId) : null;
+  return door ? `${warehouse?.name || 'Warehouse'} • Door ${door.code}` : `${warehouse?.name || 'Warehouse'} • Yard`;
+}
+
+function TrailerVisibilityPanel({ data, companyId = null }) {
+  const [showTrailers, setShowTrailers] = useState(false);
+  const trailers = companyId ? data.trailers.filter((t) => t.companyId === companyId) : data.trailers;
+  const trailerCount = trailers.length;
+  const yardCount = trailers.filter((t) => t.warehouseId && !t.doorId).length;
+  const doorCount = trailers.filter((t) => t.doorId).length;
+  const transitCount = trailers.filter((t) => !t.warehouseId || t.status === 'In Transit').length;
+
+  return (
+    <div className="tf2-modern-card">
+      <div className="tf2-modern-card-head">
+        <div className="tf2-modern-title">
+          <div className="tf2-modern-title-icon">🚛</div>
+          <div>
+            <h3>Trailer Visibility</h3>
+            <p>Current trailer locations by warehouse, door, and yard</p>
+          </div>
+        </div>
+        <button className="tf2-blue-btn" onClick={() => setShowTrailers(!showTrailers)}>
+          {showTrailers ? 'Hide Trailer Details' : 'View Trailer Details'} {showTrailers ? '⌃' : '⌄'}
+        </button>
+      </div>
+
+      <div className="tf2-door-summary-grid">
+        <div className="tf2-whse-summary"><div className="tf2-whse-header"><div className="tf2-whse-letter">🚛</div><div><h4>Total Trailers</h4><small>All visible trailers</small></div></div><div className="tf2-count-green">{trailerCount}</div><span className="tf2-count-label">Trailers</span></div>
+        <div className="tf2-whse-summary"><div className="tf2-whse-header"><div className="tf2-whse-letter">🚪</div><div><h4>On Door</h4><small>Assigned to dock doors</small></div></div><div className="tf2-count-green">{doorCount}</div><span className="tf2-count-label">Door locations</span></div>
+        <div className="tf2-whse-summary"><div className="tf2-whse-header"><div className="tf2-whse-letter">🅿️</div><div><h4>In Yard</h4><small>At warehouse, no door assigned</small></div></div><div className="tf2-count-orange">{yardCount}</div><span className="tf2-count-label">Yard locations</span></div>
+        <div className="tf2-whse-summary"><div className="tf2-whse-header"><div className="tf2-whse-letter">➡️</div><div><h4>In Transit</h4><small>Moving / no warehouse</small></div></div><div className="tf2-count-orange">{transitCount}</div><span className="tf2-count-label">In transit</span></div>
+      </div>
+
+      {showTrailers ? (
+        <div className="tf2-door-details-wrap">
+          <div className="tf2-trailer-location-list">
+            {data.warehouses.map((warehouse) => {
+              const warehouseTrailers = trailers.filter((t) => t.warehouseId === warehouse.id);
+              const onDoor = warehouseTrailers.filter((t) => t.doorId).length;
+              const inYard = warehouseTrailers.filter((t) => !t.doorId).length;
+              return (
+                <div className="tf2-trailer-warehouse-section" key={warehouse.id}>
+                  <div className="tf2-trailer-warehouse-header">
+                    <div><h4>{warehouse.name}</h4><p>{warehouseTrailers.length} trailers • {onDoor} on door • {inYard} in yard</p></div>
+                    <span className="tf2-door-warehouse-badge">{warehouse.code}</span>
+                  </div>
+                  {warehouseTrailers.length ? (
+                    <div className="tf2-trailer-grid">
+                      {warehouseTrailers.map((trailer) => <TrailerLocationCard key={trailer.id} data={data} trailer={trailer} />)}
+                    </div>
+                  ) : <div className="empty-state">No trailers currently at this warehouse.</div>}
+                </div>
+              );
+            })}
+            {trailers.filter((t) => !t.warehouseId).length ? (
+              <div className="tf2-trailer-warehouse-section">
+                <div className="tf2-trailer-warehouse-header"><div><h4>In Transit / No Warehouse</h4><p>Trailers not currently assigned to a warehouse yard or door</p></div><span className="tf2-door-warehouse-badge">→</span></div>
+                <div className="tf2-trailer-grid">{trailers.filter((t) => !t.warehouseId).map((trailer) => <TrailerLocationCard key={trailer.id} data={data} trailer={trailer} />)}</div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TrailerLocationCard({ data, trailer }) {
+  const company = data.companies.find((c) => c.id === trailer.companyId)?.name || 'Company';
+  const cssStatus = trailer.status === 'Loaded' ? 'loaded' : trailer.status === 'Empty' ? 'empty' : trailer.status === 'In Transit' ? 'transit' : '';
+  const taskNote = trailer.activeTaskId ? `Active task: ${trailer.activeTaskId}` : 'No active task';
+  return (
+    <div className={`tf2-trailer-mini ${cssStatus}`}>
+      <div className="tf2-trailer-mini-top"><strong>{trailer.number}</strong><span>{trailer.status === 'Loaded' ? '📦' : trailer.status === 'Empty' ? '🚚' : '🚛'}</span></div>
+      <h4>{trailer.status}</h4>
+      <p>{company}</p>
+      <p>{trailerLocationLabel(data, trailer)}</p>
+      <p>Last move: {timeOnly(trailer.lastMovedAt || nowISO())}</p>
+      <small>{taskNote}</small>
+    </div>
+  );
+}
+
 function RequestForm({ user, store, type }) {
+  const data = store.data;
+  const blankForm = {
+    type,
+    po: '',
+    reference: '',
+    sourceWarehouseId: '',
+    destinationWarehouseId: data.warehouses[0]?.id || '',
+    pallets: '',
+    trailerId: '',
+    priority: 'Normal',
+    appointment: '',
+    notes: ''
+  };
+  const [form, setForm] = useState(blankForm);
+
+  const trailers = data.trailers.filter((t) => {
+    if (t.companyId !== user.companyId) return false;
+
+    if (type === 'pickup') {
+      if (!form.sourceWarehouseId) return false;
+      // Show every RNF trailer currently at the selected source warehouse.
+      // A trailer with a doorId is on a dock door. A trailer with warehouseId but no doorId is in that warehouse yard.
+      return t.warehouseId === form.sourceWarehouseId;
+    }
+
+    // Empty trailer requests should show all empty RNF trailers, whether they are on a door or in a warehouse yard.
+    return t.status === 'Empty' && Boolean(t.warehouseId);
+  });
+
+  const submit = () => {
+    try {
+      if (type === 'pickup' && !form.sourceWarehouseId) throw new Error('Select a source warehouse.');
+      if (type === 'pickup' && !form.trailerId) throw new Error('Select the trailer number from the selected source warehouse.');
+      store.createRequest({ ...form, type }, user);
+      setForm(blankForm);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  return <div className="card"><h2>{type === 'pickup' ? 'Book Intercompany Pickup' : 'Request Empty Trailer'}</h2><p className="card-sub">RNF submissions are automatically approved and create shunter tasks.</p><div className="notice green">Auto Approval: RNF is configured as a trusted intercompany requestor.</div>
+    <div className="form-grid">
+      {type === 'pickup' ? <>
+        <Field label="PO Number"><input value={form.po} onChange={(e) => setForm({ ...form, po: e.target.value })} placeholder="4500123456" /></Field>
+        <Field label="Reference / STO / OBD"><input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} placeholder="Optional" /></Field>
+        <Field label="Source Warehouse"><select value={form.sourceWarehouseId} onChange={(e) => setForm({ ...form, sourceWarehouseId: e.target.value, trailerId: '' })}><option value="">Select source</option>{data.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
+      </> : null}
+      <Field label="Destination Warehouse"><select value={form.destinationWarehouseId} onChange={(e) => setForm({ ...form, destinationWarehouseId: e.target.value })}>{data.warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
+      <Field label="Number of Pallets"><input type="number" value={form.pallets} onChange={(e) => setForm({ ...form, pallets: e.target.value })} placeholder="25" /></Field>
+      <Field label={type === 'pickup' ? 'Trailer Number From Source Location' : 'Trailer Number'}><select value={form.trailerId} onChange={(e) => setForm({ ...form, trailerId: e.target.value })}><option value="">{type === 'pickup' ? (form.sourceWarehouseId ? 'Select trailer at this source' : 'Select source first') : 'Auto select empty trailer'}</option>{trailers.map((t) => {
+        const activeTaskLabel = t.activeTaskId ? ` • Active Task ${t.activeTaskId}` : '';
+        return <option key={t.id} value={t.id}>{t.number} • {t.status} • {trailerLocationLabel(data, t)}{activeTaskLabel}</option>;
+      })}</select></Field>
+      <Field label="Priority"><select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}><option>Normal</option><option>High</option><option>Urgent</option></select></Field>
+      <Field label="Needed / Appointment Time"><input value={form.appointment} onChange={(e) => setForm({ ...form, appointment: e.target.value })} placeholder="Today 10:30 AM" /></Field>
+      <Field label="Notes"><textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Special instructions" /></Field>
+    </div>
+    {type === 'pickup' && form.sourceWarehouseId && !trailers.length ? <div className="notice yellow">No RNF trailers found at this source warehouse. Check trailer master data and make sure the trailer has this warehouse assigned. If it has no door assigned, it will still show as Warehouse Yard.</div> : null}
+    <div className="notice blue">Yard rule: if a trailer has a warehouse but no door assigned, it is shown as that warehouse yard.</div>
+    <div className="form-actions"><button className="btn btn-green" onClick={submit}>Submit Request</button></div>
+  </div>;
+}
+) {
   const data = store.data;
   const blankForm = {
     type,
@@ -1601,7 +1777,7 @@ function RNFTrailerLocations({ user, store, search = '', compact = false }) {
     <div className={compact ? 'rnf-trailer-grid' : 'card'}>
       {!compact ? <h2>Trailer Location List</h2> : null}
       <div className="rnf-trailer-grid">
-        {trailers.slice(0, compact ? 6 : 999).map((t) => <div className="trailer-card" key={t.id}><h3>{t.number}</h3><span className={`badge ${iconForStatus(t.status)}`}>{t.status}</span><div className="trailer-location"><strong>{data.warehouses.find((w) => w.id === t.warehouseId)?.name || 'In Transit'}</strong><br />{t.doorId ? `Door ${data.doors.find((d) => d.id === t.doorId)?.code}` : 'Moving / no door assigned'}<br />Last move: {timeOnly(t.lastMovedAt)}</div><div className="map-strip" /></div>)}
+        {trailers.slice(0, compact ? 6 : 999).map((t) => <div className="trailer-card" key={t.id}><h3>{t.number}</h3><span className={`badge ${iconForStatus(t.status)}`}>{t.status}</span><div className="trailer-location"><strong>{data.warehouses.find((w) => w.id === t.warehouseId)?.name || 'In Transit'}</strong><br />{t.doorId ? `Door ${data.doors.find((d) => d.id === t.doorId)?.code}` : t.warehouseId ? 'Warehouse Yard' : 'In Transit / no warehouse'}<br />Last move: {timeOnly(t.lastMovedAt)}</div><div className="map-strip" /></div>)}
       </div>
     </div>
   </div>;
